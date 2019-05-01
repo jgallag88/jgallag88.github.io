@@ -1,0 +1,3513 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="518" onload="init(evt)" viewBox="0 0 1200 518" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="518.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="501" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="501" > </text>
+<g id="frames">
+<g >
+<title>__tls_get_addr (1 samples, 0.02%)</title><rect x="66.4" y="229" width="0.2" height="15.0" fill="rgb(212,169,26)" rx="2" ry="2" />
+<text  x="69.36" y="239.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate_in_internal_order (3 samples, 0.05%)</title><rect x="14.7" y="261" width="0.6" height="15.0" fill="rgb(209,139,47)" rx="2" ry="2" />
+<text  x="17.73" y="271.5" ></text>
+</g>
+<g >
+<title>__vfs_write (1 samples, 0.02%)</title><rect x="1188.8" y="149" width="0.2" height="15.0" fill="rgb(229,73,54)" rx="2" ry="2" />
+<text  x="1191.77" y="159.5" ></text>
+</g>
+<g >
+<title>cgroup_context_get_mask (1,816 samples, 31.65%)</title><rect x="718.8" y="245" width="373.5" height="15.0" fill="rgb(224,53,32)" rx="2" ry="2" />
+<text  x="721.78" y="255.5" >cgroup_context_get_mask</text>
+</g>
+<g >
+<title>safe_close (1 samples, 0.02%)</title><rect x="31.2" y="277" width="0.2" height="15.0" fill="rgb(230,169,15)" rx="2" ry="2" />
+<text  x="34.19" y="287.5" ></text>
+</g>
+<g >
+<title>__strcmp_sse2_unaligned (1 samples, 0.02%)</title><rect x="52.2" y="181" width="0.2" height="15.0" fill="rgb(250,139,38)" rx="2" ry="2" />
+<text  x="55.16" y="191.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="63.5" y="197" width="0.2" height="15.0" fill="rgb(241,41,3)" rx="2" ry="2" />
+<text  x="66.48" y="207.5" ></text>
+</g>
+<g >
+<title>rotate_left (1 samples, 0.02%)</title><rect x="63.5" y="181" width="0.2" height="15.0" fill="rgb(245,146,34)" rx="2" ry="2" />
+<text  x="66.48" y="191.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.02%)</title><rect x="51.8" y="245" width="0.2" height="15.0" fill="rgb(217,201,34)" rx="2" ry="2" />
+<text  x="54.75" y="255.5" ></text>
+</g>
+<g >
+<title>__libc_sendmsg (11 samples, 0.19%)</title><rect x="26.7" y="229" width="2.2" height="15.0" fill="rgb(206,194,27)" rx="2" ry="2" />
+<text  x="29.66" y="239.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (3 samples, 0.05%)</title><rect x="29.5" y="277" width="0.7" height="15.0" fill="rgb(222,38,36)" rx="2" ry="2" />
+<text  x="32.54" y="287.5" ></text>
+</g>
+<g >
+<title>__kmalloc_reserve.isra.43 (1 samples, 0.02%)</title><rect x="12.5" y="69" width="0.2" height="15.0" fill="rgb(215,187,18)" rx="2" ry="2" />
+<text  x="15.47" y="79.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.02%)</title><rect x="51.1" y="165" width="0.2" height="15.0" fill="rgb(234,63,24)" rx="2" ry="2" />
+<text  x="54.14" y="175.5" ></text>
+</g>
+<g >
+<title>string_table_lookup (1 samples, 0.02%)</title><rect x="60.0" y="213" width="0.2" height="15.0" fill="rgb(211,5,12)" rx="2" ry="2" />
+<text  x="62.98" y="223.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (28 samples, 0.49%)</title><rect x="16.8" y="277" width="5.7" height="15.0" fill="rgb(224,163,26)" rx="2" ry="2" />
+<text  x="19.79" y="287.5" ></text>
+</g>
+<g >
+<title>_int_realloc (1 samples, 0.02%)</title><rect x="25.4" y="181" width="0.2" height="15.0" fill="rgb(232,105,28)" rx="2" ry="2" />
+<text  x="28.43" y="191.5" ></text>
+</g>
+<g >
+<title>__strrchr_avx2 (1 samples, 0.02%)</title><rect x="59.8" y="229" width="0.2" height="15.0" fill="rgb(220,71,12)" rx="2" ry="2" />
+<text  x="62.78" y="239.5" ></text>
+</g>
+<g >
+<title>fstab_filter_options (1 samples, 0.02%)</title><rect x="1181.6" y="229" width="0.2" height="15.0" fill="rgb(219,121,48)" rx="2" ry="2" />
+<text  x="1184.57" y="239.5" ></text>
+</g>
+<g >
+<title>manager_load_unit_prepare (3 samples, 0.05%)</title><rect x="1181.8" y="245" width="0.6" height="15.0" fill="rgb(249,177,8)" rx="2" ry="2" />
+<text  x="1184.77" y="255.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (7 samples, 0.12%)</title><rect x="41.7" y="213" width="1.4" height="15.0" fill="rgb(209,78,49)" rx="2" ry="2" />
+<text  x="44.68" y="223.5" ></text>
+</g>
+<g >
+<title>manager_dispatch_cgroup_realize_queue (2 samples, 0.03%)</title><rect x="10.6" y="357" width="0.4" height="15.0" fill="rgb(246,14,4)" rx="2" ry="2" />
+<text  x="13.62" y="367.5" ></text>
+</g>
+<g >
+<title>unit_notify (1 samples, 0.02%)</title><rect x="32.4" y="309" width="0.2" height="15.0" fill="rgb(221,22,32)" rx="2" ry="2" />
+<text  x="35.42" y="319.5" ></text>
+</g>
+<g >
+<title>_mm_cmpistri (1 samples, 0.02%)</title><rect x="40.9" y="229" width="0.2" height="15.0" fill="rgb(240,229,47)" rx="2" ry="2" />
+<text  x="43.85" y="239.5" ></text>
+</g>
+<g >
+<title>resize_buckets (3 samples, 0.05%)</title><rect x="51.1" y="197" width="0.7" height="15.0" fill="rgb(221,120,45)" rx="2" ry="2" />
+<text  x="54.14" y="207.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (7 samples, 0.12%)</title><rect x="61.4" y="229" width="1.5" height="15.0" fill="rgb(211,193,7)" rx="2" ry="2" />
+<text  x="64.42" y="239.5" ></text>
+</g>
+<g >
+<title>greedy_realloc (2 samples, 0.03%)</title><rect x="38.8" y="309" width="0.4" height="15.0" fill="rgb(237,190,52)" rx="2" ry="2" />
+<text  x="41.80" y="319.5" ></text>
+</g>
+<g >
+<title>__strncmp_sse42 (1 samples, 0.02%)</title><rect x="44.8" y="229" width="0.2" height="15.0" fill="rgb(217,135,13)" rx="2" ry="2" />
+<text  x="47.76" y="239.5" ></text>
+</g>
+<g >
+<title>__strcmp_sse2_unaligned (1 samples, 0.02%)</title><rect x="60.4" y="181" width="0.2" height="15.0" fill="rgb(241,57,12)" rx="2" ry="2" />
+<text  x="63.39" y="191.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (2 samples, 0.03%)</title><rect x="50.5" y="197" width="0.4" height="15.0" fill="rgb(211,77,47)" rx="2" ry="2" />
+<text  x="53.52" y="207.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (1 samples, 0.02%)</title><rect x="33.4" y="293" width="0.3" height="15.0" fill="rgb(220,33,29)" rx="2" ry="2" />
+<text  x="36.45" y="303.5" ></text>
+</g>
+<g >
+<title>streq_ptr (1 samples, 0.02%)</title><rect x="52.2" y="197" width="0.2" height="15.0" fill="rgb(249,109,36)" rx="2" ry="2" />
+<text  x="55.16" y="207.5" ></text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.02%)</title><rect x="11.0" y="261" width="0.2" height="15.0" fill="rgb(225,93,23)" rx="2" ry="2" />
+<text  x="14.03" y="271.5" ></text>
+</g>
+<g >
+<title>unit_free_requires_mounts_for (3 samples, 0.05%)</title><rect x="31.4" y="325" width="0.6" height="15.0" fill="rgb(219,42,42)" rx="2" ry="2" />
+<text  x="34.39" y="335.5" ></text>
+</g>
+<g >
+<title>__GI___strdup (1 samples, 0.02%)</title><rect x="1185.1" y="261" width="0.2" height="15.0" fill="rgb(217,108,7)" rx="2" ry="2" />
+<text  x="1188.06" y="271.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (1 samples, 0.02%)</title><rect x="67.8" y="229" width="0.2" height="15.0" fill="rgb(225,184,43)" rx="2" ry="2" />
+<text  x="70.80" y="239.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (1 samples, 0.02%)</title><rect x="24.6" y="149" width="0.2" height="15.0" fill="rgb(220,157,41)" rx="2" ry="2" />
+<text  x="27.60" y="159.5" ></text>
+</g>
+<g >
+<title>unit_new_for_name (1 samples, 0.02%)</title><rect x="1186.9" y="325" width="0.2" height="15.0" fill="rgb(250,127,15)" rx="2" ry="2" />
+<text  x="1189.91" y="335.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_appendv (1 samples, 0.02%)</title><rect x="25.4" y="261" width="0.2" height="15.0" fill="rgb(215,102,40)" rx="2" ry="2" />
+<text  x="28.43" y="271.5" ></text>
+</g>
+<g >
+<title>fgetc_unlocked (1 samples, 0.02%)</title><rect x="38.6" y="309" width="0.2" height="15.0" fill="rgb(211,222,12)" rx="2" ry="2" />
+<text  x="41.59" y="319.5" ></text>
+</g>
+<g >
+<title>unit_serialize_item (1 samples, 0.02%)</title><rect x="1188.6" y="325" width="0.2" height="15.0" fill="rgb(233,150,48)" rx="2" ry="2" />
+<text  x="1191.56" y="335.5" ></text>
+</g>
+<g >
+<title>unaligned_read_le64 (1 samples, 0.02%)</title><rect x="20.9" y="245" width="0.2" height="15.0" fill="rgb(222,64,52)" rx="2" ry="2" />
+<text  x="23.90" y="255.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1 samples, 0.02%)</title><rect x="64.5" y="293" width="0.2" height="15.0" fill="rgb(206,137,38)" rx="2" ry="2" />
+<text  x="67.51" y="303.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="1182.2" y="197" width="0.2" height="15.0" fill="rgb(215,155,7)" rx="2" ry="2" />
+<text  x="1185.18" y="207.5" ></text>
+</g>
+<g >
+<title>sys_read (9 samples, 0.16%)</title><rect x="1178.1" y="181" width="1.8" height="15.0" fill="rgb(231,133,26)" rx="2" ry="2" />
+<text  x="1181.07" y="191.5" ></text>
+</g>
+<g >
+<title>__strspn_sse42 (1 samples, 0.02%)</title><rect x="39.8" y="309" width="0.2" height="15.0" fill="rgb(248,177,38)" rx="2" ry="2" />
+<text  x="42.82" y="319.5" ></text>
+</g>
+<g >
+<title>show_mnt_opts.isra.1 (1 samples, 0.02%)</title><rect x="1179.5" y="85" width="0.2" height="15.0" fill="rgb(242,167,19)" rx="2" ry="2" />
+<text  x="1182.51" y="95.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="1183.6" y="197" width="0.2" height="15.0" fill="rgb(236,29,28)" rx="2" ry="2" />
+<text  x="1186.62" y="207.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (1 samples, 0.02%)</title><rect x="1188.8" y="213" width="0.2" height="15.0" fill="rgb(228,37,33)" rx="2" ry="2" />
+<text  x="1191.77" y="223.5" ></text>
+</g>
+<g >
+<title>unit_serialize (10 samples, 0.17%)</title><rect x="1187.3" y="341" width="2.1" height="15.0" fill="rgb(232,70,0)" rx="2" ry="2" />
+<text  x="1190.33" y="351.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (2 samples, 0.03%)</title><rect x="48.3" y="245" width="0.4" height="15.0" fill="rgb(224,24,8)" rx="2" ry="2" />
+<text  x="51.26" y="255.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="1184.9" y="229" width="0.2" height="15.0" fill="rgb(220,144,2)" rx="2" ry="2" />
+<text  x="1187.86" y="239.5" ></text>
+</g>
+<g >
+<title>unit_name_from_path (1 samples, 0.02%)</title><rect x="65.9" y="309" width="0.3" height="15.0" fill="rgb(220,175,6)" rx="2" ry="2" />
+<text  x="68.95" y="319.5" ></text>
+</g>
+<g >
+<title>__strspn_sse42 (1 samples, 0.02%)</title><rect x="54.2" y="245" width="0.2" height="15.0" fill="rgb(242,85,17)" rx="2" ry="2" />
+<text  x="57.22" y="255.5" ></text>
+</g>
+<g >
+<title>systemd (5,735 samples, 99.97%)</title><rect x="10.4" y="453" width="1179.6" height="15.0" fill="rgb(210,61,52)" rx="2" ry="2" />
+<text  x="13.41" y="463.5" >systemd</text>
+</g>
+<g >
+<title>dual_timestamp_serialize (1 samples, 0.02%)</title><rect x="1188.1" y="325" width="0.3" height="15.0" fill="rgb(210,136,12)" rx="2" ry="2" />
+<text  x="1191.15" y="335.5" ></text>
+</g>
+<g >
+<title>dirname_malloc (1 samples, 0.02%)</title><rect x="45.8" y="277" width="0.2" height="15.0" fill="rgb(245,88,24)" rx="2" ry="2" />
+<text  x="48.79" y="287.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="1177.2" y="117" width="0.3" height="15.0" fill="rgb(240,228,54)" rx="2" ry="2" />
+<text  x="1180.25" y="127.5" ></text>
+</g>
+<g >
+<title>mount_serialize.lto_priv.273 (1 samples, 0.02%)</title><rect x="1188.4" y="325" width="0.2" height="15.0" fill="rgb(224,74,38)" rx="2" ry="2" />
+<text  x="1191.35" y="335.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="32.4" y="229" width="0.2" height="15.0" fill="rgb(221,66,40)" rx="2" ry="2" />
+<text  x="35.42" y="239.5" ></text>
+</g>
+<g >
+<title>__strcmp_sse2_unaligned (1 samples, 0.02%)</title><rect x="1182.0" y="165" width="0.2" height="15.0" fill="rgb(233,144,36)" rx="2" ry="2" />
+<text  x="1184.98" y="175.5" ></text>
+</g>
+<g >
+<title>memdup_multiply (1 samples, 0.02%)</title><rect x="51.8" y="277" width="0.2" height="15.0" fill="rgb(246,136,27)" rx="2" ry="2" />
+<text  x="54.75" y="287.5" ></text>
+</g>
+<g >
+<title>copy_process.part.35 (2 samples, 0.03%)</title><rect x="10.0" y="357" width="0.4" height="15.0" fill="rgb(220,30,24)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.02%)</title><rect x="26.2" y="229" width="0.3" height="15.0" fill="rgb(239,86,37)" rx="2" ry="2" />
+<text  x="29.25" y="239.5" ></text>
+</g>
+<g >
+<title>__strcmp_sse2_unaligned (1 samples, 0.02%)</title><rect x="60.0" y="181" width="0.2" height="15.0" fill="rgb(215,98,0)" rx="2" ry="2" />
+<text  x="62.98" y="191.5" ></text>
+</g>
+<g >
+<title>unit_load (2 samples, 0.03%)</title><rect x="32.6" y="309" width="0.4" height="15.0" fill="rgb(240,158,33)" rx="2" ry="2" />
+<text  x="35.63" y="319.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (8 samples, 0.14%)</title><rect x="67.6" y="277" width="1.6" height="15.0" fill="rgb(232,154,9)" rx="2" ry="2" />
+<text  x="70.59" y="287.5" ></text>
+</g>
+<g >
+<title>do_escape (2 samples, 0.03%)</title><rect x="54.4" y="245" width="0.4" height="15.0" fill="rgb(225,34,31)" rx="2" ry="2" />
+<text  x="57.43" y="255.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="46.6" y="181" width="0.2" height="15.0" fill="rgb(243,224,32)" rx="2" ry="2" />
+<text  x="49.61" y="191.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="1182.8" y="197" width="0.2" height="15.0" fill="rgb(236,180,18)" rx="2" ry="2" />
+<text  x="1185.80" y="207.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (2 samples, 0.03%)</title><rect x="12.1" y="101" width="0.4" height="15.0" fill="rgb(249,22,32)" rx="2" ry="2" />
+<text  x="15.06" y="111.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (1 samples, 0.02%)</title><rect x="64.7" y="309" width="0.2" height="15.0" fill="rgb(230,73,3)" rx="2" ry="2" />
+<text  x="67.71" y="319.5" ></text>
+</g>
+<g >
+<title>fsnotify_destroy_group (1 samples, 0.02%)</title><rect x="31.2" y="117" width="0.2" height="15.0" fill="rgb(235,120,17)" rx="2" ry="2" />
+<text  x="34.19" y="127.5" ></text>
+</g>
+<g >
+<title>cg_migrate_everywhere (2 samples, 0.03%)</title><rect x="10.6" y="309" width="0.4" height="15.0" fill="rgb(254,146,41)" rx="2" ry="2" />
+<text  x="13.62" y="319.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (1 samples, 0.02%)</title><rect x="10.4" y="421" width="0.2" height="15.0" fill="rgb(247,3,8)" rx="2" ry="2" />
+<text  x="13.41" y="431.5" ></text>
+</g>
+<g >
+<title>_IO_new_do_write (1 samples, 0.02%)</title><rect x="10.6" y="133" width="0.2" height="15.0" fill="rgb(232,66,41)" rx="2" ry="2" />
+<text  x="13.62" y="143.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_unref (1 samples, 0.02%)</title><rect x="26.5" y="261" width="0.2" height="15.0" fill="rgb(207,163,40)" rx="2" ry="2" />
+<text  x="29.45" y="271.5" ></text>
+</g>
+<g >
+<title>fstab_filter_options (1 samples, 0.02%)</title><rect x="41.1" y="229" width="0.2" height="15.0" fill="rgb(210,55,47)" rx="2" ry="2" />
+<text  x="44.06" y="239.5" ></text>
+</g>
+<g >
+<title>resolve_template.lto_priv.52 (2 samples, 0.03%)</title><rect x="50.1" y="261" width="0.4" height="15.0" fill="rgb(248,103,16)" rx="2" ry="2" />
+<text  x="53.11" y="271.5" ></text>
+</g>
+<g >
+<title>device_add_udev_wants (2 samples, 0.03%)</title><rect x="1177.2" y="293" width="0.5" height="15.0" fill="rgb(214,36,51)" rx="2" ry="2" />
+<text  x="1180.25" y="303.5" ></text>
+</g>
+<g >
+<title>resize_buckets (1 samples, 0.02%)</title><rect x="1184.2" y="197" width="0.2" height="15.0" fill="rgb(244,26,49)" rx="2" ry="2" />
+<text  x="1187.24" y="207.5" ></text>
+</g>
+<g >
+<title>unit_add_exec_dependencies (10 samples, 0.17%)</title><rect x="49.7" y="293" width="2.1" height="15.0" fill="rgb(216,47,38)" rx="2" ry="2" />
+<text  x="52.70" y="303.5" ></text>
+</g>
+<g >
+<title>tcache_get (1 samples, 0.02%)</title><rect x="64.3" y="213" width="0.2" height="15.0" fill="rgb(216,104,22)" rx="2" ry="2" />
+<text  x="67.30" y="223.5" ></text>
+</g>
+<g >
+<title>unit_type_from_string (1 samples, 0.02%)</title><rect x="52.2" y="229" width="0.2" height="15.0" fill="rgb(241,216,12)" rx="2" ry="2" />
+<text  x="55.16" y="239.5" ></text>
+</g>
+<g >
+<title>mount_load_proc_self_mountinfo (45 samples, 0.78%)</title><rect x="1177.7" y="325" width="9.2" height="15.0" fill="rgb(250,206,38)" rx="2" ry="2" />
+<text  x="1180.66" y="335.5" ></text>
+</g>
+<g >
+<title>skb_set_owner_w (2 samples, 0.03%)</title><rect x="27.1" y="85" width="0.4" height="15.0" fill="rgb(212,46,0)" rx="2" ry="2" />
+<text  x="30.07" y="95.5" ></text>
+</g>
+<g >
+<title>unit_update_cgroup_members_masks (2 samples, 0.03%)</title><rect x="32.6" y="293" width="0.4" height="15.0" fill="rgb(235,3,20)" rx="2" ry="2" />
+<text  x="35.63" y="303.5" ></text>
+</g>
+<g >
+<title>rotate_left (2 samples, 0.03%)</title><rect x="20.5" y="229" width="0.4" height="15.0" fill="rgb(241,187,51)" rx="2" ry="2" />
+<text  x="23.49" y="239.5" ></text>
+</g>
+<g >
+<title>sd_bus_send (6 samples, 0.10%)</title><rect x="11.6" y="293" width="1.3" height="15.0" fill="rgb(232,18,46)" rx="2" ry="2" />
+<text  x="14.65" y="303.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (1 samples, 0.02%)</title><rect x="25.0" y="261" width="0.2" height="15.0" fill="rgb(214,26,10)" rx="2" ry="2" />
+<text  x="28.01" y="271.5" ></text>
+</g>
+<g >
+<title>__sys_sendmsg (5 samples, 0.09%)</title><rect x="11.6" y="181" width="1.1" height="15.0" fill="rgb(214,66,43)" rx="2" ry="2" />
+<text  x="14.65" y="191.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (1 samples, 0.02%)</title><rect x="46.0" y="245" width="0.2" height="15.0" fill="rgb(246,129,13)" rx="2" ry="2" />
+<text  x="48.99" y="255.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.02%)</title><rect x="51.1" y="181" width="0.2" height="15.0" fill="rgb(239,93,0)" rx="2" ry="2" />
+<text  x="54.14" y="191.5" ></text>
+</g>
+<g >
+<title>path_equal (2 samples, 0.03%)</title><rect x="53.4" y="277" width="0.4" height="15.0" fill="rgb(220,3,51)" rx="2" ry="2" />
+<text  x="56.40" y="287.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="33.4" y="277" width="0.3" height="15.0" fill="rgb(237,173,40)" rx="2" ry="2" />
+<text  x="36.45" y="287.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (8 samples, 0.14%)</title><rect x="56.3" y="213" width="1.6" height="15.0" fill="rgb(222,87,2)" rx="2" ry="2" />
+<text  x="59.28" y="223.5" ></text>
+</g>
+<g >
+<title>manager_journal_is_running (1 samples, 0.02%)</title><rect x="32.4" y="277" width="0.2" height="15.0" fill="rgb(222,9,31)" rx="2" ry="2" />
+<text  x="35.42" y="287.5" ></text>
+</g>
+<g >
+<title>fsnotify_detach_mark (1 samples, 0.02%)</title><rect x="31.2" y="85" width="0.2" height="15.0" fill="rgb(211,146,42)" rx="2" ry="2" />
+<text  x="34.19" y="95.5" ></text>
+</g>
+<g >
+<title>unhexchar (1 samples, 0.02%)</title><rect x="39.2" y="309" width="0.2" height="15.0" fill="rgb(211,114,34)" rx="2" ry="2" />
+<text  x="42.21" y="319.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (10 samples, 0.17%)</title><rect x="22.5" y="277" width="2.1" height="15.0" fill="rgb(214,45,45)" rx="2" ry="2" />
+<text  x="25.55" y="287.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1 samples, 0.02%)</title><rect x="13.7" y="261" width="0.2" height="15.0" fill="rgb(243,211,42)" rx="2" ry="2" />
+<text  x="16.70" y="271.5" ></text>
+</g>
+<g >
+<title>manager_serialize (11 samples, 0.19%)</title><rect x="1187.1" y="357" width="2.3" height="15.0" fill="rgb(243,162,29)" rx="2" ry="2" />
+<text  x="1190.12" y="367.5" ></text>
+</g>
+<g >
+<title>path_compare (2 samples, 0.03%)</title><rect x="1181.2" y="261" width="0.4" height="15.0" fill="rgb(251,100,8)" rx="2" ry="2" />
+<text  x="1184.16" y="271.5" ></text>
+</g>
+<g >
+<title>resize_buckets (2 samples, 0.03%)</title><rect x="65.5" y="245" width="0.4" height="15.0" fill="rgb(253,30,34)" rx="2" ry="2" />
+<text  x="68.53" y="255.5" ></text>
+</g>
+<g >
+<title>hash_key (1 samples, 0.02%)</title><rect x="64.9" y="229" width="0.2" height="15.0" fill="rgb(223,113,36)" rx="2" ry="2" />
+<text  x="67.92" y="239.5" ></text>
+</g>
+<g >
+<title>unit_name_escape (2 samples, 0.03%)</title><rect x="54.4" y="261" width="0.4" height="15.0" fill="rgb(221,82,6)" rx="2" ry="2" />
+<text  x="57.43" y="271.5" ></text>
+</g>
+<g >
+<title>strstrip (3 samples, 0.05%)</title><rect x="39.4" y="325" width="0.6" height="15.0" fill="rgb(223,207,50)" rx="2" ry="2" />
+<text  x="42.41" y="335.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (1 samples, 0.02%)</title><rect x="65.3" y="229" width="0.2" height="15.0" fill="rgb(218,166,8)" rx="2" ry="2" />
+<text  x="68.33" y="239.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.02%)</title><rect x="29.1" y="229" width="0.2" height="15.0" fill="rgb(250,116,25)" rx="2" ry="2" />
+<text  x="32.13" y="239.5" ></text>
+</g>
+<g >
+<title>dib_raw_ptr (1 samples, 0.02%)</title><rect x="51.3" y="165" width="0.2" height="15.0" fill="rgb(206,4,7)" rx="2" ry="2" />
+<text  x="54.34" y="175.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (1 samples, 0.02%)</title><rect x="67.0" y="261" width="0.2" height="15.0" fill="rgb(247,36,13)" rx="2" ry="2" />
+<text  x="69.97" y="271.5" ></text>
+</g>
+<g >
+<title>do_page_fault (3 samples, 0.05%)</title><rect x="1189.4" y="405" width="0.6" height="15.0" fill="rgb(234,190,22)" rx="2" ry="2" />
+<text  x="1192.38" y="415.5" ></text>
+</g>
+<g >
+<title>memset@plt (1 samples, 0.02%)</title><rect x="24.8" y="229" width="0.2" height="15.0" fill="rgb(215,198,52)" rx="2" ry="2" />
+<text  x="27.81" y="239.5" ></text>
+</g>
+<g >
+<title>__m128i_shift_right (1 samples, 0.02%)</title><rect x="1181.4" y="229" width="0.2" height="15.0" fill="rgb(246,111,47)" rx="2" ry="2" />
+<text  x="1184.36" y="239.5" ></text>
+</g>
+<g >
+<title>siphash24_compress (1 samples, 0.02%)</title><rect x="66.6" y="213" width="0.2" height="15.0" fill="rgb(228,41,45)" rx="2" ry="2" />
+<text  x="69.56" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_get (3 samples, 0.05%)</title><rect x="50.5" y="229" width="0.6" height="15.0" fill="rgb(207,196,22)" rx="2" ry="2" />
+<text  x="53.52" y="239.5" ></text>
+</g>
+<g >
+<title>manager_enumerate (48 samples, 0.84%)</title><rect x="1177.2" y="357" width="9.9" height="15.0" fill="rgb(221,19,24)" rx="2" ry="2" />
+<text  x="1180.25" y="367.5" ></text>
+</g>
+<g >
+<title>seq_printf (5 samples, 0.09%)</title><rect x="1178.5" y="85" width="1.0" height="15.0" fill="rgb(210,120,39)" rx="2" ry="2" />
+<text  x="1181.48" y="95.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (2 samples, 0.03%)</title><rect x="48.3" y="229" width="0.4" height="15.0" fill="rgb(248,201,38)" rx="2" ry="2" />
+<text  x="51.26" y="239.5" ></text>
+</g>
+<g >
+<title>trivial_hash_func (7 samples, 0.12%)</title><rect x="21.1" y="261" width="1.4" height="15.0" fill="rgb(213,42,32)" rx="2" ry="2" />
+<text  x="24.11" y="271.5" ></text>
+</g>
+<g >
+<title>sock_alloc_send_pskb (3 samples, 0.05%)</title><rect x="26.9" y="101" width="0.6" height="15.0" fill="rgb(235,205,48)" rx="2" ry="2" />
+<text  x="29.87" y="111.5" ></text>
+</g>
+<g >
+<title>__strcasecmp_l_avx (1 samples, 0.02%)</title><rect x="37.6" y="309" width="0.2" height="15.0" fill="rgb(223,169,10)" rx="2" ry="2" />
+<text  x="40.56" y="319.5" ></text>
+</g>
+<g >
+<title>_IO_acquire_lock_fct (1 samples, 0.02%)</title><rect x="1188.4" y="277" width="0.2" height="15.0" fill="rgb(224,204,6)" rx="2" ry="2" />
+<text  x="1191.35" y="287.5" ></text>
+</g>
+<g >
+<title>__kmalloc_node_track_caller (1 samples, 0.02%)</title><rect x="12.5" y="53" width="0.2" height="15.0" fill="rgb(253,56,0)" rx="2" ry="2" />
+<text  x="15.47" y="63.5" ></text>
+</g>
+<g >
+<title>_extract_crng (1 samples, 0.02%)</title><rect x="47.4" y="53" width="0.2" height="15.0" fill="rgb(242,73,27)" rx="2" ry="2" />
+<text  x="50.43" y="63.5" ></text>
+</g>
+<g >
+<title>resize_buckets (1 samples, 0.02%)</title><rect x="49.5" y="229" width="0.2" height="15.0" fill="rgb(226,203,1)" rx="2" ry="2" />
+<text  x="52.49" y="239.5" ></text>
+</g>
+<g >
+<title>do_escape (1 samples, 0.02%)</title><rect x="1184.9" y="245" width="0.2" height="15.0" fill="rgb(209,113,18)" rx="2" ry="2" />
+<text  x="1187.86" y="255.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (1 samples, 0.02%)</title><rect x="1182.2" y="213" width="0.2" height="15.0" fill="rgb(216,97,8)" rx="2" ry="2" />
+<text  x="1185.18" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_base_new (1 samples, 0.02%)</title><rect x="1186.7" y="261" width="0.2" height="15.0" fill="rgb(238,193,46)" rx="2" ry="2" />
+<text  x="1189.71" y="271.5" ></text>
+</g>
+<g >
+<title>memcpy_erms (1 samples, 0.02%)</title><rect x="1178.5" y="53" width="0.2" height="15.0" fill="rgb(243,149,22)" rx="2" ry="2" />
+<text  x="1181.48" y="63.5" ></text>
+</g>
+<g >
+<title>unit_name_path_escape (1 samples, 0.02%)</title><rect x="65.9" y="293" width="0.3" height="15.0" fill="rgb(219,163,39)" rx="2" ry="2" />
+<text  x="68.95" y="303.5" ></text>
+</g>
+<g >
+<title>vfprintf (1 samples, 0.02%)</title><rect x="1189.2" y="309" width="0.2" height="15.0" fill="rgb(236,80,37)" rx="2" ry="2" />
+<text  x="1192.18" y="319.5" ></text>
+</g>
+<g >
+<title>ksize (1 samples, 0.02%)</title><rect x="26.9" y="69" width="0.2" height="15.0" fill="rgb(223,80,16)" rx="2" ry="2" />
+<text  x="29.87" y="79.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (2 samples, 0.03%)</title><rect x="33.0" y="309" width="0.4" height="15.0" fill="rgb(208,52,39)" rx="2" ry="2" />
+<text  x="36.04" y="319.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="49.9" y="197" width="0.2" height="15.0" fill="rgb(246,148,32)" rx="2" ry="2" />
+<text  x="52.90" y="207.5" ></text>
+</g>
+<g >
+<title>__strcmp_sse2_unaligned (4 samples, 0.07%)</title><rect x="56.5" y="197" width="0.8" height="15.0" fill="rgb(223,79,0)" rx="2" ry="2" />
+<text  x="59.48" y="207.5" ></text>
+</g>
+<g >
+<title>manager_coldplug.lto_priv.555 (3 samples, 0.05%)</title><rect x="32.0" y="357" width="0.6" height="15.0" fill="rgb(250,14,44)" rx="2" ry="2" />
+<text  x="35.01" y="367.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (10 samples, 0.17%)</title><rect x="46.2" y="261" width="2.1" height="15.0" fill="rgb(239,168,48)" rx="2" ry="2" />
+<text  x="49.20" y="271.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (1 samples, 0.02%)</title><rect x="47.4" y="133" width="0.2" height="15.0" fill="rgb(232,109,26)" rx="2" ry="2" />
+<text  x="50.43" y="143.5" ></text>
+</g>
+<g >
+<title>unit_name_path_escape (2 samples, 0.03%)</title><rect x="54.4" y="277" width="0.4" height="15.0" fill="rgb(218,56,16)" rx="2" ry="2" />
+<text  x="57.43" y="287.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.02%)</title><rect x="25.4" y="165" width="0.2" height="15.0" fill="rgb(229,107,50)" rx="2" ry="2" />
+<text  x="28.43" y="175.5" ></text>
+</g>
+<g >
+<title>unit_name_to_type (1 samples, 0.02%)</title><rect x="43.3" y="229" width="0.2" height="15.0" fill="rgb(228,103,7)" rx="2" ry="2" />
+<text  x="46.32" y="239.5" ></text>
+</g>
+<g >
+<title>string_hash_func (1 samples, 0.02%)</title><rect x="56.1" y="197" width="0.2" height="15.0" fill="rgb(213,206,5)" rx="2" ry="2" />
+<text  x="59.07" y="207.5" ></text>
+</g>
+<g >
+<title>malloc_consolidate (1 samples, 0.02%)</title><rect x="13.7" y="229" width="0.2" height="15.0" fill="rgb(232,46,21)" rx="2" ry="2" />
+<text  x="16.70" y="239.5" ></text>
+</g>
+<g >
+<title>string_escape_mem (1 samples, 0.02%)</title><rect x="1178.3" y="69" width="0.2" height="15.0" fill="rgb(232,47,31)" rx="2" ry="2" />
+<text  x="1181.28" y="79.5" ></text>
+</g>
+<g >
+<title>siphash24_init (1 samples, 0.02%)</title><rect x="69.0" y="197" width="0.2" height="15.0" fill="rgb(221,1,50)" rx="2" ry="2" />
+<text  x="72.03" y="207.5" ></text>
+</g>
+<g >
+<title>unit_load (2 samples, 0.03%)</title><rect x="1177.2" y="229" width="0.5" height="15.0" fill="rgb(247,167,19)" rx="2" ry="2" />
+<text  x="1180.25" y="239.5" ></text>
+</g>
+<g >
+<title>hashmap_get (2 samples, 0.03%)</title><rect x="48.3" y="261" width="0.4" height="15.0" fill="rgb(241,156,26)" rx="2" ry="2" />
+<text  x="51.26" y="271.5" ></text>
+</g>
+<g >
+<title>____fput (1 samples, 0.02%)</title><rect x="31.2" y="165" width="0.2" height="15.0" fill="rgb(212,136,26)" rx="2" ry="2" />
+<text  x="34.19" y="175.5" ></text>
+</g>
+<g >
+<title>copy_user_enhanced_fast_string (1 samples, 0.02%)</title><rect x="1188.8" y="53" width="0.2" height="15.0" fill="rgb(235,149,38)" rx="2" ry="2" />
+<text  x="1191.77" y="63.5" ></text>
+</g>
+<g >
+<title>sys_getrandom (1 samples, 0.02%)</title><rect x="47.4" y="101" width="0.2" height="15.0" fill="rgb(209,203,51)" rx="2" ry="2" />
+<text  x="50.43" y="111.5" ></text>
+</g>
+<g >
+<title>bus_foreach_bus (9 samples, 0.16%)</title><rect x="11.0" y="325" width="1.9" height="15.0" fill="rgb(212,60,44)" rx="2" ry="2" />
+<text  x="14.03" y="335.5" ></text>
+</g>
+<g >
+<title>__GI__IO_fputs (1 samples, 0.02%)</title><rect x="1188.8" y="309" width="0.2" height="15.0" fill="rgb(213,8,47)" rx="2" ry="2" />
+<text  x="1191.77" y="319.5" ></text>
+</g>
+<g >
+<title>random_bytes (1 samples, 0.02%)</title><rect x="47.4" y="181" width="0.2" height="15.0" fill="rgb(220,133,5)" rx="2" ry="2" />
+<text  x="50.43" y="191.5" ></text>
+</g>
+<g >
+<title>__GI___libc_write (1 samples, 0.02%)</title><rect x="10.6" y="85" width="0.2" height="15.0" fill="rgb(229,1,28)" rx="2" ry="2" />
+<text  x="13.62" y="95.5" ></text>
+</g>
+<g >
+<title>__GI__IO_fflush (1 samples, 0.02%)</title><rect x="10.6" y="165" width="0.2" height="15.0" fill="rgb(206,34,50)" rx="2" ry="2" />
+<text  x="13.62" y="175.5" ></text>
+</g>
+<g >
+<title>cgroup_context_get_mask (1 samples, 0.02%)</title><rect x="1177.0" y="277" width="0.2" height="15.0" fill="rgb(220,169,20)" rx="2" ry="2" />
+<text  x="1180.04" y="287.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (2 samples, 0.03%)</title><rect x="54.8" y="245" width="0.5" height="15.0" fill="rgb(220,45,5)" rx="2" ry="2" />
+<text  x="57.84" y="255.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (1 samples, 0.02%)</title><rect x="24.6" y="165" width="0.2" height="15.0" fill="rgb(212,148,31)" rx="2" ry="2" />
+<text  x="27.60" y="175.5" ></text>
+</g>
+<g >
+<title>unit_file_find_dropin_paths (13 samples, 0.23%)</title><rect x="60.2" y="261" width="2.7" height="15.0" fill="rgb(223,162,49)" rx="2" ry="2" />
+<text  x="63.19" y="271.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_iterate (7 samples, 0.12%)</title><rect x="13.9" y="293" width="1.4" height="15.0" fill="rgb(236,70,15)" rx="2" ry="2" />
+<text  x="16.91" y="303.5" ></text>
+</g>
+<g >
+<title>copy_pte_range (1 samples, 0.02%)</title><rect x="10.0" y="325" width="0.2" height="15.0" fill="rgb(230,98,32)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" ></text>
+</g>
+<g >
+<title>m_show (9 samples, 0.16%)</title><rect x="1178.1" y="117" width="1.8" height="15.0" fill="rgb(230,122,1)" rx="2" ry="2" />
+<text  x="1181.07" y="127.5" ></text>
+</g>
+<g >
+<title>storage_ptr (1 samples, 0.02%)</title><rect x="57.5" y="181" width="0.2" height="15.0" fill="rgb(240,195,32)" rx="2" ry="2" />
+<text  x="60.51" y="191.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_iterate (648 samples, 11.30%)</title><rect x="89.8" y="261" width="133.3" height="15.0" fill="rgb(207,0,37)" rx="2" ry="2" />
+<text  x="92.80" y="271.5" >internal_hashmap..</text>
+</g>
+<g >
+<title>skip_free_buckets (148 samples, 2.58%)</title><rect x="192.6" y="213" width="30.5" height="15.0" fill="rgb(248,171,29)" rx="2" ry="2" />
+<text  x="195.65" y="223.5" >sk..</text>
+</g>
+<g >
+<title>_mm_loadu_si128 (1 samples, 0.02%)</title><rect x="40.6" y="213" width="0.3" height="15.0" fill="rgb(228,91,0)" rx="2" ry="2" />
+<text  x="43.65" y="223.5" ></text>
+</g>
+<g >
+<title>mount_needs_network (1 samples, 0.02%)</title><rect x="1181.6" y="261" width="0.2" height="15.0" fill="rgb(235,3,8)" rx="2" ry="2" />
+<text  x="1184.57" y="271.5" ></text>
+</g>
+<g >
+<title>bus_unit_send_change_signal (9 samples, 0.16%)</title><rect x="11.0" y="341" width="1.9" height="15.0" fill="rgb(205,129,12)" rx="2" ry="2" />
+<text  x="14.03" y="351.5" ></text>
+</g>
+<g >
+<title>message_append_basic (1 samples, 0.02%)</title><rect x="25.4" y="245" width="0.2" height="15.0" fill="rgb(244,16,25)" rx="2" ry="2" />
+<text  x="28.43" y="255.5" ></text>
+</g>
+<g >
+<title>unit_add_slice_dependencies (15 samples, 0.26%)</title><rect x="66.2" y="325" width="3.0" height="15.0" fill="rgb(235,140,27)" rx="2" ry="2" />
+<text  x="69.15" y="335.5" ></text>
+</g>
+<g >
+<title>rotate_left (1 samples, 0.02%)</title><rect x="32.4" y="197" width="0.2" height="15.0" fill="rgb(245,198,28)" rx="2" ry="2" />
+<text  x="35.42" y="207.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (10 samples, 0.17%)</title><rect x="1182.4" y="261" width="2.0" height="15.0" fill="rgb(213,176,15)" rx="2" ry="2" />
+<text  x="1185.39" y="271.5" ></text>
+</g>
+<g >
+<title>__raw_callee_save___pv_queued_spin_unlock (1 samples, 0.02%)</title><rect x="31.2" y="69" width="0.2" height="15.0" fill="rgb(217,42,15)" rx="2" ry="2" />
+<text  x="34.19" y="79.5" ></text>
+</g>
+<g >
+<title>unit_update_cgroup_members_masks (5,386 samples, 93.88%)</title><rect x="69.4" y="325" width="1107.8" height="15.0" fill="rgb(246,218,40)" rx="2" ry="2" />
+<text  x="72.44" y="335.5" >unit_update_cgroup_members_masks</text>
+</g>
+<g >
+<title>hashmap_get (2 samples, 0.03%)</title><rect x="41.3" y="229" width="0.4" height="15.0" fill="rgb(207,146,31)" rx="2" ry="2" />
+<text  x="44.26" y="239.5" ></text>
+</g>
+<g >
+<title>unit_type_from_string (1 samples, 0.02%)</title><rect x="1182.0" y="213" width="0.2" height="15.0" fill="rgb(242,173,54)" rx="2" ry="2" />
+<text  x="1184.98" y="223.5" ></text>
+</g>
+<g >
+<title>streq_ptr (1 samples, 0.02%)</title><rect x="1182.0" y="181" width="0.2" height="15.0" fill="rgb(209,205,39)" rx="2" ry="2" />
+<text  x="1184.98" y="191.5" ></text>
+</g>
+<g >
+<title>send_removed_signal.lto_priv.348 (20 samples, 0.35%)</title><rect x="25.2" y="293" width="4.1" height="15.0" fill="rgb(248,141,9)" rx="2" ry="2" />
+<text  x="28.22" y="303.5" ></text>
+</g>
+<g >
+<title>vsnprintf (4 samples, 0.07%)</title><rect x="1178.7" y="53" width="0.8" height="15.0" fill="rgb(208,173,4)" rx="2" ry="2" />
+<text  x="1181.69" y="63.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (2 samples, 0.03%)</title><rect x="50.1" y="245" width="0.4" height="15.0" fill="rgb(218,178,18)" rx="2" ry="2" />
+<text  x="53.11" y="255.5" ></text>
+</g>
+<g >
+<title>siphash24_compress (1 samples, 0.02%)</title><rect x="1181.8" y="197" width="0.2" height="15.0" fill="rgb(246,206,21)" rx="2" ry="2" />
+<text  x="1184.77" y="207.5" ></text>
+</g>
+<g >
+<title>all (5,737 samples, 100%)</title><rect x="10.0" y="469" width="1180.0" height="15.0" fill="rgb(239,23,30)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (1 samples, 0.02%)</title><rect x="47.4" y="37" width="0.2" height="15.0" fill="rgb(244,73,19)" rx="2" ry="2" />
+<text  x="50.43" y="47.5" ></text>
+</g>
+<g >
+<title>hashmap_get (1 samples, 0.02%)</title><rect x="64.9" y="277" width="0.2" height="15.0" fill="rgb(243,195,15)" rx="2" ry="2" />
+<text  x="67.92" y="287.5" ></text>
+</g>
+<g >
+<title>set_get (2 samples, 0.03%)</title><rect x="60.2" y="229" width="0.4" height="15.0" fill="rgb(211,159,51)" rx="2" ry="2" />
+<text  x="63.19" y="239.5" ></text>
+</g>
+<g >
+<title>hash_key (1 samples, 0.02%)</title><rect x="52.4" y="261" width="0.2" height="15.0" fill="rgb(238,90,39)" rx="2" ry="2" />
+<text  x="55.37" y="271.5" ></text>
+</g>
+<g >
+<title>unit_dbus_path_from_name (2 samples, 0.03%)</title><rect x="28.9" y="277" width="0.4" height="15.0" fill="rgb(210,76,50)" rx="2" ry="2" />
+<text  x="31.92" y="287.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (1 samples, 0.02%)</title><rect x="48.5" y="197" width="0.2" height="15.0" fill="rgb(211,122,5)" rx="2" ry="2" />
+<text  x="51.46" y="207.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_by_name.constprop.25 (9 samples, 0.16%)</title><rect x="49.9" y="277" width="1.9" height="15.0" fill="rgb(248,153,3)" rx="2" ry="2" />
+<text  x="52.90" y="287.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1 samples, 0.02%)</title><rect x="13.5" y="325" width="0.2" height="15.0" fill="rgb(254,129,6)" rx="2" ry="2" />
+<text  x="16.50" y="335.5" ></text>
+</g>
+<g >
+<title>device_setup_unit (2 samples, 0.03%)</title><rect x="1177.2" y="309" width="0.5" height="15.0" fill="rgb(244,223,5)" rx="2" ry="2" />
+<text  x="1180.25" y="319.5" ></text>
+</g>
+<g >
+<title>exit_to_usermode_loop (1 samples, 0.02%)</title><rect x="31.2" y="197" width="0.2" height="15.0" fill="rgb(254,42,9)" rx="2" ry="2" />
+<text  x="34.19" y="207.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (1 samples, 0.02%)</title><rect x="67.4" y="213" width="0.2" height="15.0" fill="rgb(229,134,11)" rx="2" ry="2" />
+<text  x="70.39" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (1 samples, 0.02%)</title><rect x="1185.5" y="245" width="0.2" height="15.0" fill="rgb(206,123,11)" rx="2" ry="2" />
+<text  x="1188.47" y="255.5" ></text>
+</g>
+<g >
+<title>[libmount.so.1.1.0] (16 samples, 0.28%)</title><rect x="1177.7" y="309" width="3.2" height="15.0" fill="rgb(209,28,3)" rx="2" ry="2" />
+<text  x="1180.66" y="319.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (5 samples, 0.09%)</title><rect x="61.6" y="213" width="1.1" height="15.0" fill="rgb(250,55,36)" rx="2" ry="2" />
+<text  x="64.63" y="223.5" ></text>
+</g>
+<g >
+<title>is_main_thread (1 samples, 0.02%)</title><rect x="66.4" y="245" width="0.2" height="15.0" fill="rgb(243,104,39)" rx="2" ry="2" />
+<text  x="69.36" y="255.5" ></text>
+</g>
+<g >
+<title>handle_pte_fault (1 samples, 0.02%)</title><rect x="24.6" y="133" width="0.2" height="15.0" fill="rgb(241,32,11)" rx="2" ry="2" />
+<text  x="27.60" y="143.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_new_signal (2 samples, 0.03%)</title><rect x="11.2" y="293" width="0.4" height="15.0" fill="rgb(242,95,35)" rx="2" ry="2" />
+<text  x="14.23" y="303.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (2 samples, 0.03%)</title><rect x="33.0" y="293" width="0.4" height="15.0" fill="rgb(245,73,54)" rx="2" ry="2" />
+<text  x="36.04" y="303.5" ></text>
+</g>
+<g >
+<title>strv_find (1 samples, 0.02%)</title><rect x="45.2" y="261" width="0.2" height="15.0" fill="rgb(245,168,52)" rx="2" ry="2" />
+<text  x="48.17" y="271.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (2 samples, 0.03%)</title><rect x="41.3" y="213" width="0.4" height="15.0" fill="rgb(238,62,50)" rx="2" ry="2" />
+<text  x="44.26" y="223.5" ></text>
+</g>
+<g >
+<title>__GI___strtoul_internal (1 samples, 0.02%)</title><rect x="37.2" y="261" width="0.2" height="15.0" fill="rgb(221,112,37)" rx="2" ry="2" />
+<text  x="40.15" y="271.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (1 samples, 0.02%)</title><rect x="64.9" y="261" width="0.2" height="15.0" fill="rgb(228,213,2)" rx="2" ry="2" />
+<text  x="67.92" y="271.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (4 samples, 0.07%)</title><rect x="46.4" y="197" width="0.8" height="15.0" fill="rgb(227,173,1)" rx="2" ry="2" />
+<text  x="49.41" y="207.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (1 samples, 0.02%)</title><rect x="49.3" y="245" width="0.2" height="15.0" fill="rgb(207,111,23)" rx="2" ry="2" />
+<text  x="52.29" y="255.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (1 samples, 0.02%)</title><rect x="42.9" y="181" width="0.2" height="15.0" fill="rgb(232,211,51)" rx="2" ry="2" />
+<text  x="45.91" y="191.5" ></text>
+</g>
+<g >
+<title>unit_deserialize (32 samples, 0.56%)</title><rect x="33.7" y="341" width="6.5" height="15.0" fill="rgb(230,109,33)" rx="2" ry="2" />
+<text  x="36.65" y="351.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (2 samples, 0.03%)</title><rect x="67.2" y="261" width="0.4" height="15.0" fill="rgb(218,47,32)" rx="2" ry="2" />
+<text  x="70.18" y="271.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.02%)</title><rect x="64.3" y="229" width="0.2" height="15.0" fill="rgb(223,76,21)" rx="2" ry="2" />
+<text  x="67.30" y="239.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (10 samples, 0.17%)</title><rect x="58.1" y="245" width="2.1" height="15.0" fill="rgb(245,30,40)" rx="2" ry="2" />
+<text  x="61.13" y="255.5" ></text>
+</g>
+<g >
+<title>manager_load_unit_prepare (2 samples, 0.03%)</title><rect x="43.1" y="245" width="0.4" height="15.0" fill="rgb(247,178,2)" rx="2" ry="2" />
+<text  x="46.11" y="255.5" ></text>
+</g>
+<g >
+<title>memcpy_erms (1 samples, 0.02%)</title><rect x="1179.5" y="69" width="0.2" height="15.0" fill="rgb(209,92,1)" rx="2" ry="2" />
+<text  x="1182.51" y="79.5" ></text>
+</g>
+<g >
+<title>hashmap_remove (48 samples, 0.84%)</title><rect x="15.3" y="309" width="9.9" height="15.0" fill="rgb(206,222,46)" rx="2" ry="2" />
+<text  x="18.35" y="319.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (1 samples, 0.02%)</title><rect x="1181.8" y="229" width="0.2" height="15.0" fill="rgb(231,170,4)" rx="2" ry="2" />
+<text  x="1184.77" y="239.5" ></text>
+</g>
+<g >
+<title>streq_ptr (1 samples, 0.02%)</title><rect x="60.0" y="197" width="0.2" height="15.0" fill="rgb(219,64,42)" rx="2" ry="2" />
+<text  x="62.98" y="207.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (3 samples, 0.05%)</title><rect x="20.3" y="261" width="0.6" height="15.0" fill="rgb(208,43,41)" rx="2" ry="2" />
+<text  x="23.28" y="271.5" ></text>
+</g>
+<g >
+<title>handle_pte_fault (2 samples, 0.03%)</title><rect x="1189.6" y="341" width="0.4" height="15.0" fill="rgb(212,191,44)" rx="2" ry="2" />
+<text  x="1192.59" y="351.5" ></text>
+</g>
+<g >
+<title>process_deps (26 samples, 0.45%)</title><rect x="54.8" y="293" width="5.4" height="15.0" fill="rgb(248,8,26)" rx="2" ry="2" />
+<text  x="57.84" y="303.5" ></text>
+</g>
+<g >
+<title>unit_name_to_type (1 samples, 0.02%)</title><rect x="1182.2" y="229" width="0.2" height="15.0" fill="rgb(233,218,34)" rx="2" ry="2" />
+<text  x="1185.18" y="239.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="64.9" y="245" width="0.2" height="15.0" fill="rgb(245,168,5)" rx="2" ry="2" />
+<text  x="67.92" y="255.5" ></text>
+</g>
+<g >
+<title>page_fault (3 samples, 0.05%)</title><rect x="1189.4" y="421" width="0.6" height="15.0" fill="rgb(213,9,38)" rx="2" ry="2" />
+<text  x="1192.38" y="431.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (5 samples, 0.09%)</title><rect x="55.3" y="213" width="1.0" height="15.0" fill="rgb(217,89,22)" rx="2" ry="2" />
+<text  x="58.25" y="223.5" ></text>
+</g>
+<g >
+<title>new_do_write (1 samples, 0.02%)</title><rect x="1188.8" y="261" width="0.2" height="15.0" fill="rgb(241,111,32)" rx="2" ry="2" />
+<text  x="1191.77" y="271.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.02%)</title><rect x="1185.1" y="229" width="0.2" height="15.0" fill="rgb(214,221,27)" rx="2" ry="2" />
+<text  x="1188.06" y="239.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (1 samples, 0.02%)</title><rect x="46.2" y="197" width="0.2" height="15.0" fill="rgb(254,213,49)" rx="2" ry="2" />
+<text  x="49.20" y="207.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="63.5" y="213" width="0.2" height="15.0" fill="rgb(233,158,39)" rx="2" ry="2" />
+<text  x="66.48" y="223.5" ></text>
+</g>
+<g >
+<title>entry_value (1 samples, 0.02%)</title><rect x="13.9" y="277" width="0.2" height="15.0" fill="rgb(238,39,43)" rx="2" ry="2" />
+<text  x="16.91" y="287.5" ></text>
+</g>
+<g >
+<title>base_remove_entry (1 samples, 0.02%)</title><rect x="31.6" y="277" width="0.2" height="15.0" fill="rgb(229,129,23)" rx="2" ry="2" />
+<text  x="34.60" y="287.5" ></text>
+</g>
+<g >
+<title>bus_write_message (5 samples, 0.09%)</title><rect x="11.6" y="277" width="1.1" height="15.0" fill="rgb(237,206,27)" rx="2" ry="2" />
+<text  x="14.65" y="287.5" ></text>
+</g>
+<g >
+<title>_IO_vfprintf_internal (1 samples, 0.02%)</title><rect x="1189.2" y="277" width="0.2" height="15.0" fill="rgb(241,150,13)" rx="2" ry="2" />
+<text  x="1192.18" y="287.5" ></text>
+</g>
+<g >
+<title>seq_escape (2 samples, 0.03%)</title><rect x="1178.1" y="85" width="0.4" height="15.0" fill="rgb(244,185,25)" rx="2" ry="2" />
+<text  x="1181.07" y="95.5" ></text>
+</g>
+<g >
+<title>hash_key (10 samples, 0.17%)</title><rect x="18.2" y="261" width="2.1" height="15.0" fill="rgb(228,104,41)" rx="2" ry="2" />
+<text  x="21.23" y="271.5" ></text>
+</g>
+<g >
+<title>manager_load_unit (1 samples, 0.02%)</title><rect x="49.9" y="261" width="0.2" height="15.0" fill="rgb(244,175,30)" rx="2" ry="2" />
+<text  x="52.90" y="271.5" ></text>
+</g>
+<g >
+<title>rotate_left (1 samples, 0.02%)</title><rect x="60.2" y="149" width="0.2" height="15.0" fill="rgb(221,127,13)" rx="2" ry="2" />
+<text  x="63.19" y="159.5" ></text>
+</g>
+<g >
+<title>unit_name_from_path (3 samples, 0.05%)</title><rect x="1184.4" y="293" width="0.7" height="15.0" fill="rgb(214,52,5)" rx="2" ry="2" />
+<text  x="1187.45" y="303.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1 samples, 0.02%)</title><rect x="26.5" y="245" width="0.2" height="15.0" fill="rgb(253,214,15)" rx="2" ry="2" />
+<text  x="29.45" y="255.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="49.5" y="213" width="0.2" height="15.0" fill="rgb(239,30,43)" rx="2" ry="2" />
+<text  x="52.49" y="223.5" ></text>
+</g>
+<g >
+<title>invoke_main_loop (5,731 samples, 99.90%)</title><rect x="10.6" y="389" width="1178.8" height="15.0" fill="rgb(228,189,37)" rx="2" ry="2" />
+<text  x="13.62" y="399.5" >invoke_main_loop</text>
+</g>
+<g >
+<title>bucket_at (1 samples, 0.02%)</title><rect x="66.8" y="245" width="0.2" height="15.0" fill="rgb(252,135,3)" rx="2" ry="2" />
+<text  x="69.77" y="255.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (1 samples, 0.02%)</title><rect x="43.1" y="229" width="0.2" height="15.0" fill="rgb(219,183,21)" rx="2" ry="2" />
+<text  x="46.11" y="239.5" ></text>
+</g>
+<g >
+<title>message_append_field_signature (1 samples, 0.02%)</title><rect x="12.7" y="261" width="0.2" height="15.0" fill="rgb(243,80,5)" rx="2" ry="2" />
+<text  x="15.67" y="271.5" ></text>
+</g>
+<g >
+<title>path_startswith (2 samples, 0.03%)</title><rect x="40.6" y="261" width="0.5" height="15.0" fill="rgb(235,142,16)" rx="2" ry="2" />
+<text  x="43.65" y="271.5" ></text>
+</g>
+<g >
+<title>__strstr_sse2_unaligned (1 samples, 0.02%)</title><rect x="65.9" y="261" width="0.3" height="15.0" fill="rgb(221,82,6)" rx="2" ry="2" />
+<text  x="68.95" y="271.5" ></text>
+</g>
+<g >
+<title>mount_setup_new_unit (14 samples, 0.24%)</title><rect x="1181.6" y="293" width="2.8" height="15.0" fill="rgb(227,143,51)" rx="2" ry="2" />
+<text  x="1184.57" y="303.5" ></text>
+</g>
+<g >
+<title>freep (1 samples, 0.02%)</title><rect x="1185.3" y="261" width="0.2" height="15.0" fill="rgb(226,223,37)" rx="2" ry="2" />
+<text  x="1188.27" y="271.5" ></text>
+</g>
+<g >
+<title>mount_add_device_dependencies (3 samples, 0.05%)</title><rect x="44.8" y="293" width="0.6" height="15.0" fill="rgb(229,164,14)" rx="2" ry="2" />
+<text  x="47.76" y="303.5" ></text>
+</g>
+<g >
+<title>seq_printf (1 samples, 0.02%)</title><rect x="1179.7" y="53" width="0.2" height="15.0" fill="rgb(235,27,28)" rx="2" ry="2" />
+<text  x="1182.72" y="63.5" ></text>
+</g>
+<g >
+<title>unit_file_find_dropin_conf_paths (13 samples, 0.23%)</title><rect x="60.2" y="277" width="2.7" height="15.0" fill="rgb(228,31,8)" rx="2" ry="2" />
+<text  x="63.19" y="287.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (1 samples, 0.02%)</title><rect x="1184.0" y="197" width="0.2" height="15.0" fill="rgb(206,182,31)" rx="2" ry="2" />
+<text  x="1187.04" y="207.5" ></text>
+</g>
+<g >
+<title>__GI__IO_sputbackc (2 samples, 0.03%)</title><rect x="1180.3" y="213" width="0.4" height="15.0" fill="rgb(217,195,34)" rx="2" ry="2" />
+<text  x="1183.33" y="223.5" ></text>
+</g>
+<g >
+<title>message_extend_fields (1 samples, 0.02%)</title><rect x="12.7" y="245" width="0.2" height="15.0" fill="rgb(241,217,14)" rx="2" ry="2" />
+<text  x="15.67" y="255.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (1 samples, 0.02%)</title><rect x="10.6" y="69" width="0.2" height="15.0" fill="rgb(229,44,18)" rx="2" ry="2" />
+<text  x="13.62" y="79.5" ></text>
+</g>
+<g >
+<title>message_extend_body (1 samples, 0.02%)</title><rect x="25.4" y="229" width="0.2" height="15.0" fill="rgb(224,105,13)" rx="2" ry="2" />
+<text  x="28.43" y="239.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="66.6" y="245" width="0.2" height="15.0" fill="rgb(225,144,42)" rx="2" ry="2" />
+<text  x="69.56" y="255.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_erms (1 samples, 0.02%)</title><rect x="51.5" y="165" width="0.3" height="15.0" fill="rgb(245,158,42)" rx="2" ry="2" />
+<text  x="54.55" y="175.5" ></text>
+</g>
+<g >
+<title>isempty (1 samples, 0.02%)</title><rect x="49.1" y="245" width="0.2" height="15.0" fill="rgb(213,221,0)" rx="2" ry="2" />
+<text  x="52.08" y="255.5" ></text>
+</g>
+<g >
+<title>_int_malloc (2 samples, 0.03%)</title><rect x="68.6" y="197" width="0.4" height="15.0" fill="rgb(251,148,25)" rx="2" ry="2" />
+<text  x="71.62" y="207.5" ></text>
+</g>
+<g >
+<title>bucket_at (54 samples, 0.94%)</title><rect x="106.9" y="245" width="11.1" height="15.0" fill="rgb(231,40,14)" rx="2" ry="2" />
+<text  x="109.88" y="255.5" ></text>
+</g>
+<g >
+<title>freep (1 samples, 0.02%)</title><rect x="64.5" y="309" width="0.2" height="15.0" fill="rgb(220,128,21)" rx="2" ry="2" />
+<text  x="67.51" y="319.5" ></text>
+</g>
+<g >
+<title>manager_load_unit (5 samples, 0.09%)</title><rect x="32.6" y="341" width="1.1" height="15.0" fill="rgb(223,219,49)" rx="2" ry="2" />
+<text  x="35.63" y="351.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (2 samples, 0.03%)</title><rect x="1189.6" y="357" width="0.4" height="15.0" fill="rgb(241,35,23)" rx="2" ry="2" />
+<text  x="1192.59" y="367.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (3 samples, 0.05%)</title><rect x="47.6" y="197" width="0.7" height="15.0" fill="rgb(211,73,22)" rx="2" ry="2" />
+<text  x="50.64" y="207.5" ></text>
+</g>
+<g >
+<title>storage_ptr (38 samples, 0.66%)</title><rect x="184.8" y="197" width="7.8" height="15.0" fill="rgb(218,84,22)" rx="2" ry="2" />
+<text  x="187.83" y="207.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_seal (1 samples, 0.02%)</title><rect x="12.7" y="277" width="0.2" height="15.0" fill="rgb(247,139,11)" rx="2" ry="2" />
+<text  x="15.67" y="287.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_new_signal (4 samples, 0.07%)</title><rect x="25.6" y="277" width="0.9" height="15.0" fill="rgb(228,39,5)" rx="2" ry="2" />
+<text  x="28.63" y="287.5" ></text>
+</g>
+<g >
+<title>[libmount.so.1.1.0] (1 samples, 0.02%)</title><rect x="1177.9" y="261" width="0.2" height="15.0" fill="rgb(231,134,40)" rx="2" ry="2" />
+<text  x="1180.86" y="271.5" ></text>
+</g>
+<g >
+<title>unit_new_for_name (9 samples, 0.16%)</title><rect x="1185.1" y="293" width="1.8" height="15.0" fill="rgb(243,82,1)" rx="2" ry="2" />
+<text  x="1188.06" y="303.5" ></text>
+</g>
+<g >
+<title>__GI___lxstat (1 samples, 0.02%)</title><rect x="1177.5" y="133" width="0.2" height="15.0" fill="rgb(226,100,44)" rx="2" ry="2" />
+<text  x="1180.45" y="143.5" ></text>
+</g>
+<g >
+<title>exec_command_done_array (3 samples, 0.05%)</title><rect x="30.6" y="293" width="0.6" height="15.0" fill="rgb(221,228,49)" rx="2" ry="2" />
+<text  x="33.57" y="303.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (1 samples, 0.02%)</title><rect x="46.2" y="165" width="0.2" height="15.0" fill="rgb(236,122,42)" rx="2" ry="2" />
+<text  x="49.20" y="175.5" ></text>
+</g>
+<g >
+<title>sock_sendmsg (11 samples, 0.19%)</title><rect x="26.7" y="133" width="2.2" height="15.0" fill="rgb(247,91,45)" rx="2" ry="2" />
+<text  x="29.66" y="143.5" ></text>
+</g>
+<g >
+<title>sock_alloc_send_pskb (1 samples, 0.02%)</title><rect x="12.5" y="117" width="0.2" height="15.0" fill="rgb(244,216,49)" rx="2" ry="2" />
+<text  x="15.47" y="127.5" ></text>
+</g>
+<g >
+<title>path_is_normalized (1 samples, 0.02%)</title><rect x="65.9" y="277" width="0.3" height="15.0" fill="rgb(216,177,38)" rx="2" ry="2" />
+<text  x="68.95" y="287.5" ></text>
+</g>
+<g >
+<title>manager_dispatch_load_queue (2 samples, 0.03%)</title><rect x="1177.2" y="245" width="0.5" height="15.0" fill="rgb(251,145,52)" rx="2" ry="2" />
+<text  x="1180.25" y="255.5" ></text>
+</g>
+<g >
+<title>part_make_space (1 samples, 0.02%)</title><rect x="25.4" y="213" width="0.2" height="15.0" fill="rgb(226,76,22)" rx="2" ry="2" />
+<text  x="28.43" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_put (10 samples, 0.17%)</title><rect x="46.2" y="245" width="2.1" height="15.0" fill="rgb(208,3,3)" rx="2" ry="2" />
+<text  x="49.20" y="255.5" ></text>
+</g>
+<g >
+<title>mount_is_extrinsic (2 samples, 0.03%)</title><rect x="40.6" y="277" width="0.5" height="15.0" fill="rgb(247,31,19)" rx="2" ry="2" />
+<text  x="43.65" y="287.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.02%)</title><rect x="1186.9" y="277" width="0.2" height="15.0" fill="rgb(233,161,48)" rx="2" ry="2" />
+<text  x="1189.91" y="287.5" ></text>
+</g>
+<g >
+<title>hashmap_put (7 samples, 0.12%)</title><rect x="41.7" y="229" width="1.4" height="15.0" fill="rgb(208,126,50)" rx="2" ry="2" />
+<text  x="44.68" y="239.5" ></text>
+</g>
+<g >
+<title>__wake_up_sync_key (7 samples, 0.12%)</title><rect x="27.5" y="85" width="1.4" height="15.0" fill="rgb(216,229,33)" rx="2" ry="2" />
+<text  x="30.48" y="95.5" ></text>
+</g>
+<g >
+<title>inotify_release (1 samples, 0.02%)</title><rect x="31.2" y="133" width="0.2" height="15.0" fill="rgb(251,20,12)" rx="2" ry="2" />
+<text  x="34.19" y="143.5" ></text>
+</g>
+<g >
+<title>unit_find_dropin_paths (13 samples, 0.23%)</title><rect x="60.2" y="293" width="2.7" height="15.0" fill="rgb(221,129,2)" rx="2" ry="2" />
+<text  x="63.19" y="303.5" ></text>
+</g>
+<g >
+<title>manager_dispatch_dbus_queue (9 samples, 0.16%)</title><rect x="11.0" y="357" width="1.9" height="15.0" fill="rgb(231,113,23)" rx="2" ry="2" />
+<text  x="14.03" y="367.5" ></text>
+</g>
+<g >
+<title>generic_file_write_iter (1 samples, 0.02%)</title><rect x="1188.8" y="117" width="0.2" height="15.0" fill="rgb(254,187,7)" rx="2" ry="2" />
+<text  x="1191.77" y="127.5" ></text>
+</g>
+<g >
+<title>manager_dispatch_load_queue (5,528 samples, 96.36%)</title><rect x="40.2" y="357" width="1137.0" height="15.0" fill="rgb(251,9,43)" rx="2" ry="2" />
+<text  x="43.24" y="367.5" >manager_dispatch_load_queue</text>
+</g>
+<g >
+<title>unit_done (10 samples, 0.17%)</title><rect x="29.3" y="325" width="2.1" height="15.0" fill="rgb(231,127,15)" rx="2" ry="2" />
+<text  x="32.33" y="335.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1 samples, 0.02%)</title><rect x="11.0" y="277" width="0.2" height="15.0" fill="rgb(221,133,26)" rx="2" ry="2" />
+<text  x="14.03" y="287.5" ></text>
+</g>
+<g >
+<title>storage_ptr (31 samples, 0.54%)</title><rect x="216.7" y="181" width="6.4" height="15.0" fill="rgb(212,74,47)" rx="2" ry="2" />
+<text  x="219.71" y="191.5" ></text>
+</g>
+<g >
+<title>__libc_fork (1 samples, 0.02%)</title><rect x="10.4" y="437" width="0.2" height="15.0" fill="rgb(216,214,1)" rx="2" ry="2" />
+<text  x="13.41" y="447.5" ></text>
+</g>
+<g >
+<title>path_is_normalized (2 samples, 0.03%)</title><rect x="48.9" y="261" width="0.4" height="15.0" fill="rgb(209,206,4)" rx="2" ry="2" />
+<text  x="51.87" y="271.5" ></text>
+</g>
+<g >
+<title>malloc_multiply (1 samples, 0.02%)</title><rect x="29.1" y="245" width="0.2" height="15.0" fill="rgb(232,25,27)" rx="2" ry="2" />
+<text  x="32.13" y="255.5" ></text>
+</g>
+<g >
+<title>resize_buckets (9 samples, 0.16%)</title><rect x="46.4" y="213" width="1.9" height="15.0" fill="rgb(216,172,6)" rx="2" ry="2" />
+<text  x="49.41" y="223.5" ></text>
+</g>
+<g >
+<title>unix_stream_sendmsg (11 samples, 0.19%)</title><rect x="26.7" y="117" width="2.2" height="15.0" fill="rgb(225,76,27)" rx="2" ry="2" />
+<text  x="29.66" y="127.5" ></text>
+</g>
+<g >
+<title>unit_type_from_string (1 samples, 0.02%)</title><rect x="60.0" y="229" width="0.2" height="15.0" fill="rgb(230,140,29)" rx="2" ry="2" />
+<text  x="62.98" y="239.5" ></text>
+</g>
+<g >
+<title>memset (1 samples, 0.02%)</title><rect x="1186.7" y="229" width="0.2" height="15.0" fill="rgb(219,220,50)" rx="2" ry="2" />
+<text  x="1189.71" y="239.5" ></text>
+</g>
+<g >
+<title>vfs_read (9 samples, 0.16%)</title><rect x="1178.1" y="165" width="1.8" height="15.0" fill="rgb(216,181,3)" rx="2" ry="2" />
+<text  x="1181.07" y="175.5" ></text>
+</g>
+<g >
+<title>__m128i_shift_right (1 samples, 0.02%)</title><rect x="40.6" y="229" width="0.3" height="15.0" fill="rgb(222,141,25)" rx="2" ry="2" />
+<text  x="43.65" y="239.5" ></text>
+</g>
+<g >
+<title>strcpy (1 samples, 0.02%)</title><rect x="46.0" y="261" width="0.2" height="15.0" fill="rgb(223,51,45)" rx="2" ry="2" />
+<text  x="48.99" y="271.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_new (1 samples, 0.02%)</title><rect x="26.2" y="261" width="0.3" height="15.0" fill="rgb(235,169,19)" rx="2" ry="2" />
+<text  x="29.25" y="271.5" ></text>
+</g>
+<g >
+<title>mfree (2 samples, 0.03%)</title><rect x="30.2" y="277" width="0.4" height="15.0" fill="rgb(226,91,39)" rx="2" ry="2" />
+<text  x="33.16" y="287.5" ></text>
+</g>
+<g >
+<title>memcpy@plt (1 samples, 0.02%)</title><rect x="25.0" y="229" width="0.2" height="15.0" fill="rgb(243,137,1)" rx="2" ry="2" />
+<text  x="28.01" y="239.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.02%)</title><rect x="47.4" y="117" width="0.2" height="15.0" fill="rgb(213,113,20)" rx="2" ry="2" />
+<text  x="50.43" y="127.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="33.2" y="277" width="0.2" height="15.0" fill="rgb(254,119,17)" rx="2" ry="2" />
+<text  x="36.24" y="287.5" ></text>
+</g>
+<g >
+<title>n_buckets (1 samples, 0.02%)</title><rect x="57.7" y="181" width="0.2" height="15.0" fill="rgb(240,40,17)" rx="2" ry="2" />
+<text  x="60.72" y="191.5" ></text>
+</g>
+<g >
+<title>free_perturb (1 samples, 0.02%)</title><rect x="26.5" y="213" width="0.2" height="15.0" fill="rgb(230,24,28)" rx="2" ry="2" />
+<text  x="29.45" y="223.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="69.0" y="213" width="0.2" height="15.0" fill="rgb(240,87,26)" rx="2" ry="2" />
+<text  x="72.03" y="223.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (3 samples, 0.05%)</title><rect x="44.1" y="197" width="0.7" height="15.0" fill="rgb(214,18,44)" rx="2" ry="2" />
+<text  x="47.14" y="207.5" ></text>
+</g>
+<g >
+<title>message_append_field_string.lto_priv.109 (2 samples, 0.03%)</title><rect x="25.8" y="261" width="0.4" height="15.0" fill="rgb(221,87,52)" rx="2" ry="2" />
+<text  x="28.84" y="271.5" ></text>
+</g>
+<g >
+<title>sipround (2 samples, 0.03%)</title><rect x="55.7" y="181" width="0.4" height="15.0" fill="rgb(246,188,48)" rx="2" ry="2" />
+<text  x="58.66" y="191.5" ></text>
+</g>
+<g >
+<title>unit_file_find_dirs.lto_priv.99 (1 samples, 0.02%)</title><rect x="1177.2" y="149" width="0.3" height="15.0" fill="rgb(248,33,10)" rx="2" ry="2" />
+<text  x="1180.25" y="159.5" ></text>
+</g>
+<g >
+<title>show_mountinfo (9 samples, 0.16%)</title><rect x="1178.1" y="101" width="1.8" height="15.0" fill="rgb(227,107,34)" rx="2" ry="2" />
+<text  x="1181.07" y="111.5" ></text>
+</g>
+<g >
+<title>dual_timestamp_is_set (1 samples, 0.02%)</title><rect x="1188.1" y="309" width="0.3" height="15.0" fill="rgb(211,56,7)" rx="2" ry="2" />
+<text  x="1191.15" y="319.5" ></text>
+</g>
+<g >
+<title>send_new_signal (9 samples, 0.16%)</title><rect x="11.0" y="309" width="1.9" height="15.0" fill="rgb(220,10,6)" rx="2" ry="2" />
+<text  x="14.03" y="319.5" ></text>
+</g>
+<g >
+<title>next_idx (1 samples, 0.02%)</title><rect x="57.7" y="197" width="0.2" height="15.0" fill="rgb(249,54,38)" rx="2" ry="2" />
+<text  x="60.72" y="207.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate_entry (6 samples, 0.10%)</title><rect x="14.1" y="277" width="1.2" height="15.0" fill="rgb(236,78,0)" rx="2" ry="2" />
+<text  x="17.11" y="287.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (2 samples, 0.03%)</title><rect x="1189.6" y="373" width="0.4" height="15.0" fill="rgb(209,121,14)" rx="2" ry="2" />
+<text  x="1192.59" y="383.5" ></text>
+</g>
+<g >
+<title>unit_create_cgroup (2 samples, 0.03%)</title><rect x="10.6" y="325" width="0.4" height="15.0" fill="rgb(253,203,49)" rx="2" ry="2" />
+<text  x="13.62" y="335.5" ></text>
+</g>
+<g >
+<title>manager_dispatch_load_queue (2 samples, 0.03%)</title><rect x="32.6" y="325" width="0.4" height="15.0" fill="rgb(222,14,41)" rx="2" ry="2" />
+<text  x="35.63" y="335.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="54.4" y="229" width="0.2" height="15.0" fill="rgb(224,61,50)" rx="2" ry="2" />
+<text  x="57.43" y="239.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1 samples, 0.02%)</title><rect x="24.6" y="229" width="0.2" height="15.0" fill="rgb(244,214,45)" rx="2" ry="2" />
+<text  x="27.60" y="239.5" ></text>
+</g>
+<g >
+<title>sys_clone (2 samples, 0.03%)</title><rect x="10.0" y="389" width="0.4" height="15.0" fill="rgb(231,162,18)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" ></text>
+</g>
+<g >
+<title>unit_free.part.77 (3 samples, 0.05%)</title><rect x="1189.4" y="437" width="0.6" height="15.0" fill="rgb(213,124,29)" rx="2" ry="2" />
+<text  x="1192.38" y="447.5" ></text>
+</g>
+<g >
+<title>alloc_skb_with_frags (1 samples, 0.02%)</title><rect x="12.5" y="101" width="0.2" height="15.0" fill="rgb(210,142,54)" rx="2" ry="2" />
+<text  x="15.47" y="111.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (7 samples, 0.12%)</title><rect x="66.2" y="309" width="1.4" height="15.0" fill="rgb(243,76,37)" rx="2" ry="2" />
+<text  x="69.15" y="319.5" ></text>
+</g>
+<g >
+<title>hashmap_put (3 samples, 0.05%)</title><rect x="51.1" y="229" width="0.7" height="15.0" fill="rgb(240,69,51)" rx="2" ry="2" />
+<text  x="54.14" y="239.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (13 samples, 0.23%)</title><rect x="55.3" y="229" width="2.6" height="15.0" fill="rgb(246,126,21)" rx="2" ry="2" />
+<text  x="58.25" y="239.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (1 samples, 0.02%)</title><rect x="10.8" y="229" width="0.2" height="15.0" fill="rgb(251,98,33)" rx="2" ry="2" />
+<text  x="13.82" y="239.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (3 samples, 0.05%)</title><rect x="68.4" y="213" width="0.6" height="15.0" fill="rgb(237,63,39)" rx="2" ry="2" />
+<text  x="71.41" y="223.5" ></text>
+</g>
+<g >
+<title>cg_attach (1 samples, 0.02%)</title><rect x="10.6" y="245" width="0.2" height="15.0" fill="rgb(238,164,41)" rx="2" ry="2" />
+<text  x="13.62" y="255.5" ></text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.02%)</title><rect x="13.5" y="309" width="0.2" height="15.0" fill="rgb(234,52,51)" rx="2" ry="2" />
+<text  x="16.50" y="319.5" ></text>
+</g>
+<g >
+<title>hashmap_put (7 samples, 0.12%)</title><rect x="1183.0" y="229" width="1.4" height="15.0" fill="rgb(247,26,47)" rx="2" ry="2" />
+<text  x="1186.01" y="239.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (1 samples, 0.02%)</title><rect x="40.0" y="293" width="0.2" height="15.0" fill="rgb(211,30,42)" rx="2" ry="2" />
+<text  x="43.03" y="303.5" ></text>
+</g>
+<g >
+<title>unit_new (3 samples, 0.05%)</title><rect x="1186.3" y="277" width="0.6" height="15.0" fill="rgb(221,69,23)" rx="2" ry="2" />
+<text  x="1189.30" y="287.5" ></text>
+</g>
+<g >
+<title>hash_key (2 samples, 0.03%)</title><rect x="50.5" y="181" width="0.4" height="15.0" fill="rgb(223,28,50)" rx="2" ry="2" />
+<text  x="53.52" y="191.5" ></text>
+</g>
+<g >
+<title>mount_needs_network (1 samples, 0.02%)</title><rect x="41.1" y="261" width="0.2" height="15.0" fill="rgb(205,13,15)" rx="2" ry="2" />
+<text  x="44.06" y="271.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_append (1 samples, 0.02%)</title><rect x="25.4" y="277" width="0.2" height="15.0" fill="rgb(240,213,13)" rx="2" ry="2" />
+<text  x="28.43" y="287.5" ></text>
+</g>
+<g >
+<title>storage_ptr (1 samples, 0.02%)</title><rect x="42.7" y="165" width="0.2" height="15.0" fill="rgb(236,152,44)" rx="2" ry="2" />
+<text  x="45.70" y="175.5" ></text>
+</g>
+<g >
+<title>__strrchr_avx2 (1 samples, 0.02%)</title><rect x="62.7" y="213" width="0.2" height="15.0" fill="rgb(230,207,14)" rx="2" ry="2" />
+<text  x="65.65" y="223.5" ></text>
+</g>
+<g >
+<title>unit_file_find_dirs.lto_priv.99 (13 samples, 0.23%)</title><rect x="60.2" y="245" width="2.7" height="15.0" fill="rgb(254,147,54)" rx="2" ry="2" />
+<text  x="63.19" y="255.5" ></text>
+</g>
+<g >
+<title>_IO_new_do_write (1 samples, 0.02%)</title><rect x="1188.8" y="277" width="0.2" height="15.0" fill="rgb(229,91,10)" rx="2" ry="2" />
+<text  x="1191.77" y="287.5" ></text>
+</g>
+<g >
+<title>fputc (1 samples, 0.02%)</title><rect x="1188.4" y="293" width="0.2" height="15.0" fill="rgb(214,78,14)" rx="2" ry="2" />
+<text  x="1191.35" y="303.5" ></text>
+</g>
+<g >
+<title>unit_get_subtree_mask (2 samples, 0.03%)</title><rect x="32.6" y="245" width="0.4" height="15.0" fill="rgb(249,229,13)" rx="2" ry="2" />
+<text  x="35.63" y="255.5" ></text>
+</g>
+<g >
+<title>path_compare (2 samples, 0.03%)</title><rect x="54.0" y="261" width="0.4" height="15.0" fill="rgb(241,22,46)" rx="2" ry="2" />
+<text  x="57.02" y="271.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="67.2" y="213" width="0.2" height="15.0" fill="rgb(226,124,44)" rx="2" ry="2" />
+<text  x="70.18" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (10 samples, 0.17%)</title><rect x="46.2" y="229" width="2.1" height="15.0" fill="rgb(213,154,47)" rx="2" ry="2" />
+<text  x="49.20" y="239.5" ></text>
+</g>
+<g >
+<title>unit_load_fragment_and_dropin_optional (8 samples, 0.14%)</title><rect x="62.9" y="309" width="1.6" height="15.0" fill="rgb(219,0,38)" rx="2" ry="2" />
+<text  x="65.86" y="319.5" ></text>
+</g>
+<g >
+<title>device_process_new (2 samples, 0.03%)</title><rect x="1177.2" y="325" width="0.5" height="15.0" fill="rgb(217,182,38)" rx="2" ry="2" />
+<text  x="1180.25" y="335.5" ></text>
+</g>
+<g >
+<title>split (1 samples, 0.02%)</title><rect x="45.0" y="229" width="0.2" height="15.0" fill="rgb(234,159,43)" rx="2" ry="2" />
+<text  x="47.97" y="239.5" ></text>
+</g>
+<g >
+<title>unix_stream_sendmsg (4 samples, 0.07%)</title><rect x="11.9" y="133" width="0.8" height="15.0" fill="rgb(246,26,44)" rx="2" ry="2" />
+<text  x="14.85" y="143.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (6 samples, 0.10%)</title><rect x="50.5" y="261" width="1.3" height="15.0" fill="rgb(241,132,26)" rx="2" ry="2" />
+<text  x="53.52" y="271.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="60.2" y="165" width="0.2" height="15.0" fill="rgb(220,189,26)" rx="2" ry="2" />
+<text  x="63.19" y="175.5" ></text>
+</g>
+<g >
+<title>memcpy (1 samples, 0.02%)</title><rect x="46.2" y="181" width="0.2" height="15.0" fill="rgb(246,17,26)" rx="2" ry="2" />
+<text  x="49.20" y="191.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="67.2" y="197" width="0.2" height="15.0" fill="rgb(214,79,50)" rx="2" ry="2" />
+<text  x="70.18" y="207.5" ></text>
+</g>
+<g >
+<title>hashmap_get (2 samples, 0.03%)</title><rect x="67.6" y="261" width="0.4" height="15.0" fill="rgb(231,92,53)" rx="2" ry="2" />
+<text  x="70.59" y="271.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (1 samples, 0.02%)</title><rect x="60.4" y="197" width="0.2" height="15.0" fill="rgb(232,100,46)" rx="2" ry="2" />
+<text  x="63.39" y="207.5" ></text>
+</g>
+<g >
+<title>seq_read (9 samples, 0.16%)</title><rect x="1178.1" y="133" width="1.8" height="15.0" fill="rgb(218,54,51)" rx="2" ry="2" />
+<text  x="1181.07" y="143.5" ></text>
+</g>
+<g >
+<title>base_remove_entry (3 samples, 0.05%)</title><rect x="24.6" y="277" width="0.6" height="15.0" fill="rgb(223,107,18)" rx="2" ry="2" />
+<text  x="27.60" y="287.5" ></text>
+</g>
+<g >
+<title>hashmap_put (1 samples, 0.02%)</title><rect x="1185.5" y="261" width="0.2" height="15.0" fill="rgb(219,148,1)" rx="2" ry="2" />
+<text  x="1188.47" y="271.5" ></text>
+</g>
+<g >
+<title>memcpy (1 samples, 0.02%)</title><rect x="42.1" y="165" width="0.2" height="15.0" fill="rgb(212,189,41)" rx="2" ry="2" />
+<text  x="45.09" y="175.5" ></text>
+</g>
+<g >
+<title>siphash24_compress (5 samples, 0.09%)</title><rect x="21.5" y="245" width="1.0" height="15.0" fill="rgb(241,192,21)" rx="2" ry="2" />
+<text  x="24.52" y="255.5" ></text>
+</g>
+<g >
+<title>__GI___libc_write (1 samples, 0.02%)</title><rect x="1188.8" y="229" width="0.2" height="15.0" fill="rgb(246,187,20)" rx="2" ry="2" />
+<text  x="1191.77" y="239.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (5 samples, 0.09%)</title><rect x="68.2" y="245" width="1.0" height="15.0" fill="rgb(213,207,28)" rx="2" ry="2" />
+<text  x="71.21" y="255.5" ></text>
+</g>
+<g >
+<title>copy_pte_range (1 samples, 0.02%)</title><rect x="10.4" y="325" width="0.2" height="15.0" fill="rgb(247,200,46)" rx="2" ry="2" />
+<text  x="13.41" y="335.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (2 samples, 0.03%)</title><rect x="41.9" y="181" width="0.4" height="15.0" fill="rgb(207,167,6)" rx="2" ry="2" />
+<text  x="44.88" y="191.5" ></text>
+</g>
+<g >
+<title>hashmap_get (1 samples, 0.02%)</title><rect x="1182.8" y="229" width="0.2" height="15.0" fill="rgb(236,147,45)" rx="2" ry="2" />
+<text  x="1185.80" y="239.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="10.8" y="197" width="0.2" height="15.0" fill="rgb(245,217,1)" rx="2" ry="2" />
+<text  x="13.82" y="207.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (1 samples, 0.02%)</title><rect x="50.9" y="197" width="0.2" height="15.0" fill="rgb(222,29,46)" rx="2" ry="2" />
+<text  x="53.93" y="207.5" ></text>
+</g>
+<g >
+<title>memset (1 samples, 0.02%)</title><rect x="51.5" y="181" width="0.3" height="15.0" fill="rgb(241,70,26)" rx="2" ry="2" />
+<text  x="54.55" y="191.5" ></text>
+</g>
+<g >
+<title>hashmap_base_ensure_allocated (1 samples, 0.02%)</title><rect x="1182.6" y="229" width="0.2" height="15.0" fill="rgb(218,22,45)" rx="2" ry="2" />
+<text  x="1185.60" y="239.5" ></text>
+</g>
+<g >
+<title>hashmap_base_new (1 samples, 0.02%)</title><rect x="66.4" y="261" width="0.2" height="15.0" fill="rgb(223,92,20)" rx="2" ry="2" />
+<text  x="69.36" y="271.5" ></text>
+</g>
+<g >
+<title>__GI___close (1 samples, 0.02%)</title><rect x="31.2" y="245" width="0.2" height="15.0" fill="rgb(234,224,44)" rx="2" ry="2" />
+<text  x="34.19" y="255.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate_in_internal_order (1 samples, 0.02%)</title><rect x="1187.1" y="293" width="0.2" height="15.0" fill="rgb(219,190,11)" rx="2" ry="2" />
+<text  x="1190.12" y="303.5" ></text>
+</g>
+<g >
+<title>bucket_at (2 samples, 0.03%)</title><rect x="57.3" y="197" width="0.4" height="15.0" fill="rgb(245,206,13)" rx="2" ry="2" />
+<text  x="60.31" y="207.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="1185.9" y="229" width="0.2" height="15.0" fill="rgb(207,106,37)" rx="2" ry="2" />
+<text  x="1188.89" y="239.5" ></text>
+</g>
+<g >
+<title>vfs_statx (1 samples, 0.02%)</title><rect x="1177.5" y="53" width="0.2" height="15.0" fill="rgb(233,88,3)" rx="2" ry="2" />
+<text  x="1180.45" y="63.5" ></text>
+</g>
+<g >
+<title>__libc_calloc (1 samples, 0.02%)</title><rect x="11.4" y="261" width="0.2" height="15.0" fill="rgb(232,17,39)" rx="2" ry="2" />
+<text  x="14.44" y="271.5" ></text>
+</g>
+<g >
+<title>dib_raw_ptr (1 samples, 0.02%)</title><rect x="15.1" y="229" width="0.2" height="15.0" fill="rgb(249,75,23)" rx="2" ry="2" />
+<text  x="18.14" y="239.5" ></text>
+</g>
+<g >
+<title>new_do_write (1 samples, 0.02%)</title><rect x="10.6" y="117" width="0.2" height="15.0" fill="rgb(206,4,24)" rx="2" ry="2" />
+<text  x="13.62" y="127.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="46.6" y="165" width="0.2" height="15.0" fill="rgb(250,208,50)" rx="2" ry="2" />
+<text  x="49.61" y="175.5" ></text>
+</g>
+<g >
+<title>siphash24_compress (1 samples, 0.02%)</title><rect x="1182.8" y="165" width="0.2" height="15.0" fill="rgb(229,199,48)" rx="2" ry="2" />
+<text  x="1185.80" y="175.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (1 samples, 0.02%)</title><rect x="65.3" y="245" width="0.2" height="15.0" fill="rgb(254,178,54)" rx="2" ry="2" />
+<text  x="68.33" y="255.5" ></text>
+</g>
+<g >
+<title>copy_process.part.35 (1 samples, 0.02%)</title><rect x="10.4" y="357" width="0.2" height="15.0" fill="rgb(221,153,49)" rx="2" ry="2" />
+<text  x="13.41" y="367.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="1184.2" y="149" width="0.2" height="15.0" fill="rgb(239,30,54)" rx="2" ry="2" />
+<text  x="1187.24" y="159.5" ></text>
+</g>
+<g >
+<title>bus_socket_write_message (11 samples, 0.19%)</title><rect x="26.7" y="245" width="2.2" height="15.0" fill="rgb(250,168,9)" rx="2" ry="2" />
+<text  x="29.66" y="255.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (1 samples, 0.02%)</title><rect x="32.4" y="261" width="0.2" height="15.0" fill="rgb(252,80,1)" rx="2" ry="2" />
+<text  x="35.42" y="271.5" ></text>
+</g>
+<g >
+<title>cgroup_context_has_cpu_shares (239 samples, 4.17%)</title><rect x="994.8" y="229" width="49.2" height="15.0" fill="rgb(230,165,17)" rx="2" ry="2" />
+<text  x="997.81" y="239.5" >cgro..</text>
+</g>
+<g >
+<title>fstab_filter_options (2 samples, 0.03%)</title><rect x="44.8" y="245" width="0.4" height="15.0" fill="rgb(210,179,38)" rx="2" ry="2" />
+<text  x="47.76" y="255.5" ></text>
+</g>
+<g >
+<title>__GI___libc_realloc (1 samples, 0.02%)</title><rect x="12.7" y="229" width="0.2" height="15.0" fill="rgb(253,124,4)" rx="2" ry="2" />
+<text  x="15.67" y="239.5" ></text>
+</g>
+<g >
+<title>trivial_hash_func (1 samples, 0.02%)</title><rect x="66.6" y="229" width="0.2" height="15.0" fill="rgb(246,214,22)" rx="2" ry="2" />
+<text  x="69.56" y="239.5" ></text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.02%)</title><rect x="30.0" y="261" width="0.2" height="15.0" fill="rgb(222,144,53)" rx="2" ry="2" />
+<text  x="32.95" y="271.5" ></text>
+</g>
+<g >
+<title>task_work_run (1 samples, 0.02%)</title><rect x="31.2" y="181" width="0.2" height="15.0" fill="rgb(253,58,36)" rx="2" ry="2" />
+<text  x="34.19" y="191.5" ></text>
+</g>
+<g >
+<title>exec_context_done (6 samples, 0.10%)</title><rect x="29.3" y="309" width="1.3" height="15.0" fill="rgb(248,99,8)" rx="2" ry="2" />
+<text  x="32.33" y="319.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="65.7" y="213" width="0.2" height="15.0" fill="rgb(229,116,50)" rx="2" ry="2" />
+<text  x="68.74" y="223.5" ></text>
+</g>
+<g >
+<title>main (5,731 samples, 99.90%)</title><rect x="10.6" y="405" width="1178.8" height="15.0" fill="rgb(230,117,38)" rx="2" ry="2" />
+<text  x="13.62" y="415.5" >main</text>
+</g>
+<g >
+<title>__generic_file_write_iter (1 samples, 0.02%)</title><rect x="1188.8" y="101" width="0.2" height="15.0" fill="rgb(212,121,27)" rx="2" ry="2" />
+<text  x="1191.77" y="111.5" ></text>
+</g>
+<g >
+<title>mount_point_ignore (3 samples, 0.05%)</title><rect x="53.2" y="293" width="0.6" height="15.0" fill="rgb(231,215,35)" rx="2" ry="2" />
+<text  x="56.19" y="303.5" ></text>
+</g>
+<g >
+<title>__alloc_skb (1 samples, 0.02%)</title><rect x="12.5" y="85" width="0.2" height="15.0" fill="rgb(250,20,52)" rx="2" ry="2" />
+<text  x="15.47" y="95.5" ></text>
+</g>
+<g >
+<title>mount_add_default_dependencies (20 samples, 0.35%)</title><rect x="40.6" y="293" width="4.2" height="15.0" fill="rgb(238,138,7)" rx="2" ry="2" />
+<text  x="43.65" y="303.5" ></text>
+</g>
+<g >
+<title>__sys_sendmsg (11 samples, 0.19%)</title><rect x="26.7" y="165" width="2.2" height="15.0" fill="rgb(242,82,48)" rx="2" ry="2" />
+<text  x="29.66" y="175.5" ></text>
+</g>
+<g >
+<title>__libc_calloc (1 samples, 0.02%)</title><rect x="26.2" y="245" width="0.3" height="15.0" fill="rgb(209,164,24)" rx="2" ry="2" />
+<text  x="29.25" y="255.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (7 samples, 0.12%)</title><rect x="27.5" y="53" width="1.4" height="15.0" fill="rgb(213,127,33)" rx="2" ry="2" />
+<text  x="30.48" y="63.5" ></text>
+</g>
+<g >
+<title>_IO_getdelim (9 samples, 0.16%)</title><rect x="1178.1" y="261" width="1.8" height="15.0" fill="rgb(214,105,23)" rx="2" ry="2" />
+<text  x="1181.07" y="271.5" ></text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.02%)</title><rect x="13.7" y="245" width="0.2" height="15.0" fill="rgb(210,167,50)" rx="2" ry="2" />
+<text  x="16.70" y="255.5" ></text>
+</g>
+<g >
+<title>exec_command_done (3 samples, 0.05%)</title><rect x="30.6" y="277" width="0.6" height="15.0" fill="rgb(252,203,26)" rx="2" ry="2" />
+<text  x="33.57" y="287.5" ></text>
+</g>
+<g >
+<title>path_equal (2 samples, 0.03%)</title><rect x="1181.2" y="277" width="0.4" height="15.0" fill="rgb(219,77,4)" rx="2" ry="2" />
+<text  x="1184.16" y="287.5" ></text>
+</g>
+<g >
+<title>mount_enumerate.lto_priv.282 (45 samples, 0.78%)</title><rect x="1177.7" y="341" width="9.2" height="15.0" fill="rgb(205,123,30)" rx="2" ry="2" />
+<text  x="1180.66" y="351.5" ></text>
+</g>
+<g >
+<title>__strrchr_avx2 (1 samples, 0.02%)</title><rect x="31.4" y="309" width="0.2" height="15.0" fill="rgb(228,154,1)" rx="2" ry="2" />
+<text  x="34.39" y="319.5" ></text>
+</g>
+<g >
+<title>kmem_cache_alloc (1 samples, 0.02%)</title><rect x="10.2" y="341" width="0.2" height="15.0" fill="rgb(252,107,31)" rx="2" ry="2" />
+<text  x="13.21" y="351.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (3 samples, 0.05%)</title><rect x="44.1" y="229" width="0.7" height="15.0" fill="rgb(214,93,27)" rx="2" ry="2" />
+<text  x="47.14" y="239.5" ></text>
+</g>
+<g >
+<title>mount_load_root_mount (1 samples, 0.02%)</title><rect x="52.4" y="309" width="0.2" height="15.0" fill="rgb(232,42,2)" rx="2" ry="2" />
+<text  x="55.37" y="319.5" ></text>
+</g>
+<g >
+<title>mount_add_extras (57 samples, 0.99%)</title><rect x="40.6" y="309" width="11.8" height="15.0" fill="rgb(254,162,35)" rx="2" ry="2" />
+<text  x="43.65" y="319.5" ></text>
+</g>
+<g >
+<title>hashmap_free (1 samples, 0.02%)</title><rect x="13.7" y="309" width="0.2" height="15.0" fill="rgb(220,152,8)" rx="2" ry="2" />
+<text  x="16.70" y="319.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (9 samples, 0.16%)</title><rect x="1178.1" y="213" width="1.8" height="15.0" fill="rgb(205,201,33)" rx="2" ry="2" />
+<text  x="1181.07" y="223.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (2 samples, 0.03%)</title><rect x="52.0" y="245" width="0.4" height="15.0" fill="rgb(212,78,17)" rx="2" ry="2" />
+<text  x="54.96" y="255.5" ></text>
+</g>
+<g >
+<title>bucket_at (78 samples, 1.36%)</title><rect x="176.6" y="213" width="16.0" height="15.0" fill="rgb(241,86,47)" rx="2" ry="2" />
+<text  x="179.60" y="223.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_by_name.constprop.25 (13 samples, 0.23%)</title><rect x="1181.8" y="277" width="2.6" height="15.0" fill="rgb(240,68,13)" rx="2" ry="2" />
+<text  x="1184.77" y="287.5" ></text>
+</g>
+<g >
+<title>vfs_write (1 samples, 0.02%)</title><rect x="1188.8" y="165" width="0.2" height="15.0" fill="rgb(219,88,46)" rx="2" ry="2" />
+<text  x="1191.77" y="175.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.02%)</title><rect x="1188.8" y="197" width="0.2" height="15.0" fill="rgb(239,137,29)" rx="2" ry="2" />
+<text  x="1191.77" y="207.5" ></text>
+</g>
+<g >
+<title>unit_serialize_item (1 samples, 0.02%)</title><rect x="1188.4" y="309" width="0.2" height="15.0" fill="rgb(209,102,11)" rx="2" ry="2" />
+<text  x="1191.35" y="319.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="1185.7" y="245" width="0.2" height="15.0" fill="rgb(240,28,32)" rx="2" ry="2" />
+<text  x="1188.68" y="255.5" ></text>
+</g>
+<g >
+<title>__flockfile (3 samples, 0.05%)</title><rect x="38.0" y="309" width="0.6" height="15.0" fill="rgb(243,49,37)" rx="2" ry="2" />
+<text  x="40.97" y="319.5" ></text>
+</g>
+<g >
+<title>hashmap_put (1 samples, 0.02%)</title><rect x="40.0" y="309" width="0.2" height="15.0" fill="rgb(219,152,47)" rx="2" ry="2" />
+<text  x="43.03" y="319.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.02%)</title><rect x="10.6" y="53" width="0.2" height="15.0" fill="rgb(216,176,50)" rx="2" ry="2" />
+<text  x="13.62" y="63.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (5 samples, 0.09%)</title><rect x="11.6" y="229" width="1.1" height="15.0" fill="rgb(244,56,36)" rx="2" ry="2" />
+<text  x="14.65" y="239.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_remove (2 samples, 0.03%)</title><rect x="31.6" y="293" width="0.4" height="15.0" fill="rgb(209,189,3)" rx="2" ry="2" />
+<text  x="34.60" y="303.5" ></text>
+</g>
+<g >
+<title>rotate_left (1 samples, 0.02%)</title><rect x="65.7" y="181" width="0.2" height="15.0" fill="rgb(236,27,43)" rx="2" ry="2" />
+<text  x="68.74" y="191.5" ></text>
+</g>
+<g >
+<title>cg_migrate (2 samples, 0.03%)</title><rect x="10.6" y="261" width="0.4" height="15.0" fill="rgb(224,0,7)" rx="2" ry="2" />
+<text  x="13.62" y="271.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_by_name.constprop.25 (9 samples, 0.16%)</title><rect x="41.3" y="277" width="1.8" height="15.0" fill="rgb(206,193,37)" rx="2" ry="2" />
+<text  x="44.26" y="287.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (9 samples, 0.16%)</title><rect x="1178.1" y="197" width="1.8" height="15.0" fill="rgb(214,184,40)" rx="2" ry="2" />
+<text  x="1181.07" y="207.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (10 samples, 0.17%)</title><rect x="46.2" y="277" width="2.1" height="15.0" fill="rgb(213,60,49)" rx="2" ry="2" />
+<text  x="49.20" y="287.5" ></text>
+</g>
+<g >
+<title>new_sync_write (1 samples, 0.02%)</title><rect x="1188.8" y="133" width="0.2" height="15.0" fill="rgb(248,168,50)" rx="2" ry="2" />
+<text  x="1191.77" y="143.5" ></text>
+</g>
+<g >
+<title>_IO_vsscanf (5 samples, 0.09%)</title><rect x="1179.9" y="245" width="1.0" height="15.0" fill="rgb(228,143,30)" rx="2" ry="2" />
+<text  x="1182.92" y="255.5" ></text>
+</g>
+<g >
+<title>resize_buckets (2 samples, 0.03%)</title><rect x="67.2" y="245" width="0.4" height="15.0" fill="rgb(251,225,31)" rx="2" ry="2" />
+<text  x="70.18" y="255.5" ></text>
+</g>
+<g >
+<title>bus_label_escape (2 samples, 0.03%)</title><rect x="28.9" y="261" width="0.4" height="15.0" fill="rgb(245,120,34)" rx="2" ry="2" />
+<text  x="31.92" y="271.5" ></text>
+</g>
+<g >
+<title>unit_serialize_item_format (3 samples, 0.05%)</title><rect x="1188.8" y="325" width="0.6" height="15.0" fill="rgb(211,40,51)" rx="2" ry="2" />
+<text  x="1191.77" y="335.5" ></text>
+</g>
+<g >
+<title>manager_load_unit_prepare (1 samples, 0.02%)</title><rect x="49.9" y="245" width="0.2" height="15.0" fill="rgb(218,67,11)" rx="2" ry="2" />
+<text  x="52.90" y="255.5" ></text>
+</g>
+<g >
+<title>hashmap_put (4 samples, 0.07%)</title><rect x="65.1" y="277" width="0.8" height="15.0" fill="rgb(241,47,45)" rx="2" ry="2" />
+<text  x="68.12" y="287.5" ></text>
+</g>
+<g >
+<title>hashmap_get (3 samples, 0.05%)</title><rect x="43.5" y="229" width="0.6" height="15.0" fill="rgb(220,190,24)" rx="2" ry="2" />
+<text  x="46.53" y="239.5" ></text>
+</g>
+<g >
+<title>sock_def_readable (7 samples, 0.12%)</title><rect x="27.5" y="101" width="1.4" height="15.0" fill="rgb(229,37,8)" rx="2" ry="2" />
+<text  x="30.48" y="111.5" ></text>
+</g>
+<g >
+<title>unit_name_to_instance (2 samples, 0.03%)</title><rect x="1185.9" y="261" width="0.4" height="15.0" fill="rgb(211,190,48)" rx="2" ry="2" />
+<text  x="1188.89" y="271.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (1 samples, 0.02%)</title><rect x="1182.8" y="213" width="0.2" height="15.0" fill="rgb(219,119,51)" rx="2" ry="2" />
+<text  x="1185.80" y="223.5" ></text>
+</g>
+<g >
+<title>tcache_put (1 samples, 0.02%)</title><rect x="11.0" y="245" width="0.2" height="15.0" fill="rgb(248,3,18)" rx="2" ry="2" />
+<text  x="14.03" y="255.5" ></text>
+</g>
+<g >
+<title>dib_raw_ptr (49 samples, 0.85%)</title><rect x="213.0" y="197" width="10.1" height="15.0" fill="rgb(210,194,48)" rx="2" ry="2" />
+<text  x="216.01" y="207.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (6 samples, 0.10%)</title><rect x="50.5" y="245" width="1.3" height="15.0" fill="rgb(231,30,7)" rx="2" ry="2" />
+<text  x="53.52" y="255.5" ></text>
+</g>
+<g >
+<title>__do_page_fault (1 samples, 0.02%)</title><rect x="1186.7" y="165" width="0.2" height="15.0" fill="rgb(213,36,15)" rx="2" ry="2" />
+<text  x="1189.71" y="175.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (5 samples, 0.09%)</title><rect x="64.9" y="309" width="1.0" height="15.0" fill="rgb(208,105,30)" rx="2" ry="2" />
+<text  x="67.92" y="319.5" ></text>
+</g>
+<g >
+<title>trivial_hash_func (1 samples, 0.02%)</title><rect x="1182.8" y="181" width="0.2" height="15.0" fill="rgb(229,150,49)" rx="2" ry="2" />
+<text  x="1185.80" y="191.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (1 samples, 0.02%)</title><rect x="45.8" y="261" width="0.2" height="15.0" fill="rgb(246,80,46)" rx="2" ry="2" />
+<text  x="48.79" y="271.5" ></text>
+</g>
+<g >
+<title>set_clear_free (2 samples, 0.03%)</title><rect x="63.1" y="261" width="0.4" height="15.0" fill="rgb(219,43,33)" rx="2" ry="2" />
+<text  x="66.07" y="271.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_clear (2 samples, 0.03%)</title><rect x="63.1" y="245" width="0.4" height="15.0" fill="rgb(229,1,36)" rx="2" ry="2" />
+<text  x="66.07" y="255.5" ></text>
+</g>
+<g >
+<title>device_enumerate.lto_priv.188 (2 samples, 0.03%)</title><rect x="1177.2" y="341" width="0.5" height="15.0" fill="rgb(212,65,52)" rx="2" ry="2" />
+<text  x="1180.25" y="351.5" ></text>
+</g>
+<g >
+<title>bus_foreach_bus (20 samples, 0.35%)</title><rect x="25.2" y="309" width="4.1" height="15.0" fill="rgb(211,85,42)" rx="2" ry="2" />
+<text  x="28.22" y="319.5" ></text>
+</g>
+<g >
+<title>siphash24_finalize (1 samples, 0.02%)</title><rect x="1184.2" y="165" width="0.2" height="15.0" fill="rgb(236,7,8)" rx="2" ry="2" />
+<text  x="1187.24" y="175.5" ></text>
+</g>
+<g >
+<title>do_escape_char (1 samples, 0.02%)</title><rect x="54.6" y="229" width="0.2" height="15.0" fill="rgb(242,146,24)" rx="2" ry="2" />
+<text  x="57.63" y="239.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (1 samples, 0.02%)</title><rect x="10.6" y="101" width="0.2" height="15.0" fill="rgb(231,176,52)" rx="2" ry="2" />
+<text  x="13.62" y="111.5" ></text>
+</g>
+<g >
+<title>__strspn_sse42 (2 samples, 0.03%)</title><rect x="53.4" y="245" width="0.4" height="15.0" fill="rgb(242,141,51)" rx="2" ry="2" />
+<text  x="56.40" y="255.5" ></text>
+</g>
+<g >
+<title>resize_buckets (4 samples, 0.07%)</title><rect x="42.3" y="197" width="0.8" height="15.0" fill="rgb(244,178,18)" rx="2" ry="2" />
+<text  x="45.29" y="207.5" ></text>
+</g>
+<g >
+<title>__GI__IO_fputs (1 samples, 0.02%)</title><rect x="1188.6" y="309" width="0.2" height="15.0" fill="rgb(206,100,53)" rx="2" ry="2" />
+<text  x="1191.56" y="319.5" ></text>
+</g>
+<g >
+<title>scope_enumerate.lto_priv.334 (1 samples, 0.02%)</title><rect x="1186.9" y="341" width="0.2" height="15.0" fill="rgb(222,15,41)" rx="2" ry="2" />
+<text  x="1189.91" y="351.5" ></text>
+</g>
+<g >
+<title>path_spec_unwatch (1 samples, 0.02%)</title><rect x="31.2" y="293" width="0.2" height="15.0" fill="rgb(217,192,28)" rx="2" ry="2" />
+<text  x="34.19" y="303.5" ></text>
+</g>
+<g >
+<title>stpcpy (4 samples, 0.07%)</title><rect x="60.6" y="229" width="0.8" height="15.0" fill="rgb(239,175,29)" rx="2" ry="2" />
+<text  x="63.60" y="239.5" ></text>
+</g>
+<g >
+<title>manager_load_unit_prepare (3 samples, 0.05%)</title><rect x="33.0" y="325" width="0.7" height="15.0" fill="rgb(213,215,16)" rx="2" ry="2" />
+<text  x="36.04" y="335.5" ></text>
+</g>
+<g >
+<title>hashmap_put (3 samples, 0.05%)</title><rect x="67.0" y="277" width="0.6" height="15.0" fill="rgb(224,94,23)" rx="2" ry="2" />
+<text  x="69.97" y="287.5" ></text>
+</g>
+<g >
+<title>___sys_sendmsg (5 samples, 0.09%)</title><rect x="11.6" y="165" width="1.1" height="15.0" fill="rgb(237,34,54)" rx="2" ry="2" />
+<text  x="14.65" y="175.5" ></text>
+</g>
+<g >
+<title>__GI___libc_realloc (2 samples, 0.03%)</title><rect x="25.8" y="229" width="0.4" height="15.0" fill="rgb(205,4,45)" rx="2" ry="2" />
+<text  x="28.84" y="239.5" ></text>
+</g>
+<g >
+<title>__libc_sendmsg (5 samples, 0.09%)</title><rect x="11.6" y="245" width="1.1" height="15.0" fill="rgb(238,67,24)" rx="2" ry="2" />
+<text  x="14.65" y="255.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (1 samples, 0.02%)</title><rect x="65.3" y="197" width="0.2" height="15.0" fill="rgb(239,163,44)" rx="2" ry="2" />
+<text  x="68.33" y="207.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (2 samples, 0.03%)</title><rect x="1185.9" y="245" width="0.4" height="15.0" fill="rgb(205,120,15)" rx="2" ry="2" />
+<text  x="1188.89" y="255.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (1 samples, 0.02%)</title><rect x="67.4" y="229" width="0.2" height="15.0" fill="rgb(221,150,26)" rx="2" ry="2" />
+<text  x="70.39" y="239.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1 samples, 0.02%)</title><rect x="11.4" y="245" width="0.2" height="15.0" fill="rgb(240,28,20)" rx="2" ry="2" />
+<text  x="14.44" y="255.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (5 samples, 0.09%)</title><rect x="11.6" y="213" width="1.1" height="15.0" fill="rgb(249,156,4)" rx="2" ry="2" />
+<text  x="14.65" y="223.5" ></text>
+</g>
+<g >
+<title>mount_load.lto_priv.266 (117 samples, 2.04%)</title><rect x="40.4" y="325" width="24.1" height="15.0" fill="rgb(246,94,44)" rx="2" ry="2" />
+<text  x="43.44" y="335.5" >m..</text>
+</g>
+<g >
+<title>mount_is_bind (3 samples, 0.05%)</title><rect x="44.8" y="277" width="0.6" height="15.0" fill="rgb(214,153,35)" rx="2" ry="2" />
+<text  x="47.76" y="287.5" ></text>
+</g>
+<g >
+<title>close_nointr (1 samples, 0.02%)</title><rect x="31.2" y="261" width="0.2" height="15.0" fill="rgb(218,63,41)" rx="2" ry="2" />
+<text  x="34.19" y="271.5" ></text>
+</g>
+<g >
+<title>security_socket_sendmsg (1 samples, 0.02%)</title><rect x="11.6" y="133" width="0.3" height="15.0" fill="rgb(238,56,2)" rx="2" ry="2" />
+<text  x="14.65" y="143.5" ></text>
+</g>
+<g >
+<title>bidi_set_free (56 samples, 0.98%)</title><rect x="13.7" y="325" width="11.5" height="15.0" fill="rgb(213,54,9)" rx="2" ry="2" />
+<text  x="16.70" y="335.5" ></text>
+</g>
+<g >
+<title>manager_load_unit (2 samples, 0.03%)</title><rect x="52.0" y="277" width="0.4" height="15.0" fill="rgb(214,11,41)" rx="2" ry="2" />
+<text  x="54.96" y="287.5" ></text>
+</g>
+<g >
+<title>unit_new (1 samples, 0.02%)</title><rect x="1186.9" y="309" width="0.2" height="15.0" fill="rgb(212,180,40)" rx="2" ry="2" />
+<text  x="1189.91" y="319.5" ></text>
+</g>
+<g >
+<title>manager_get_units_requiring_mounts_for (1 samples, 0.02%)</title><rect x="46.0" y="277" width="0.2" height="15.0" fill="rgb(218,75,41)" rx="2" ry="2" />
+<text  x="48.99" y="287.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (11 samples, 0.19%)</title><rect x="26.7" y="213" width="2.2" height="15.0" fill="rgb(252,198,5)" rx="2" ry="2" />
+<text  x="29.66" y="223.5" ></text>
+</g>
+<g >
+<title>___vfprintf_chk (1 samples, 0.02%)</title><rect x="1189.2" y="293" width="0.2" height="15.0" fill="rgb(206,198,48)" rx="2" ry="2" />
+<text  x="1192.18" y="303.5" ></text>
+</g>
+<g >
+<title>sys_clone (1 samples, 0.02%)</title><rect x="10.4" y="389" width="0.2" height="15.0" fill="rgb(233,79,26)" rx="2" ry="2" />
+<text  x="13.41" y="399.5" ></text>
+</g>
+<g >
+<title>siphash24_init (1 samples, 0.02%)</title><rect x="20.9" y="261" width="0.2" height="15.0" fill="rgb(217,25,10)" rx="2" ry="2" />
+<text  x="23.90" y="271.5" ></text>
+</g>
+<g >
+<title>getrandom (1 samples, 0.02%)</title><rect x="47.4" y="149" width="0.2" height="15.0" fill="rgb(220,187,17)" rx="2" ry="2" />
+<text  x="50.43" y="159.5" ></text>
+</g>
+<g >
+<title>mfree (3 samples, 0.05%)</title><rect x="29.5" y="293" width="0.7" height="15.0" fill="rgb(229,152,50)" rx="2" ry="2" />
+<text  x="32.54" y="303.5" ></text>
+</g>
+<g >
+<title>__strcspn_sse42 (1 samples, 0.02%)</title><rect x="40.6" y="245" width="0.3" height="15.0" fill="rgb(246,205,0)" rx="2" ry="2" />
+<text  x="43.65" y="255.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="67.2" y="229" width="0.2" height="15.0" fill="rgb(254,109,28)" rx="2" ry="2" />
+<text  x="70.18" y="239.5" ></text>
+</g>
+<g >
+<title>set_put (1 samples, 0.02%)</title><rect x="10.8" y="245" width="0.2" height="15.0" fill="rgb(239,62,45)" rx="2" ry="2" />
+<text  x="13.82" y="255.5" ></text>
+</g>
+<g >
+<title>_do_fork (2 samples, 0.03%)</title><rect x="10.0" y="373" width="0.4" height="15.0" fill="rgb(237,134,49)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (1 samples, 0.02%)</title><rect x="49.9" y="213" width="0.2" height="15.0" fill="rgb(221,11,0)" rx="2" ry="2" />
+<text  x="52.90" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (1 samples, 0.02%)</title><rect x="46.2" y="213" width="0.2" height="15.0" fill="rgb(217,126,8)" rx="2" ry="2" />
+<text  x="49.20" y="223.5" ></text>
+</g>
+<g >
+<title>unit_get_subtree_mask (5,385 samples, 93.86%)</title><rect x="69.6" y="309" width="1107.6" height="15.0" fill="rgb(213,101,7)" rx="2" ry="2" />
+<text  x="72.65" y="319.5" >unit_get_subtree_mask</text>
+</g>
+<g >
+<title>manager_load_unit (2 samples, 0.03%)</title><rect x="1177.2" y="261" width="0.5" height="15.0" fill="rgb(212,209,5)" rx="2" ry="2" />
+<text  x="1180.25" y="271.5" ></text>
+</g>
+<g >
+<title>cgroup_context_has_blockio_config (95 samples, 1.66%)</title><rect x="975.3" y="229" width="19.5" height="15.0" fill="rgb(208,35,30)" rx="2" ry="2" />
+<text  x="978.27" y="239.5" ></text>
+</g>
+<g >
+<title>mempset (1 samples, 0.02%)</title><rect x="63.3" y="213" width="0.2" height="15.0" fill="rgb(217,208,35)" rx="2" ry="2" />
+<text  x="66.27" y="223.5" ></text>
+</g>
+<g >
+<title>bucket_at (1 samples, 0.02%)</title><rect x="31.8" y="277" width="0.2" height="15.0" fill="rgb(252,188,28)" rx="2" ry="2" />
+<text  x="34.80" y="287.5" ></text>
+</g>
+<g >
+<title>mount_verify (11 samples, 0.19%)</title><rect x="52.6" y="309" width="2.2" height="15.0" fill="rgb(214,17,26)" rx="2" ry="2" />
+<text  x="55.58" y="319.5" ></text>
+</g>
+<g >
+<title>trivial_hash_func (1 samples, 0.02%)</title><rect x="1183.8" y="197" width="0.2" height="15.0" fill="rgb(208,83,29)" rx="2" ry="2" />
+<text  x="1186.83" y="207.5" ></text>
+</g>
+<g >
+<title>__stpcpy_sse2_unaligned (1 samples, 0.02%)</title><rect x="57.9" y="229" width="0.2" height="15.0" fill="rgb(221,106,43)" rx="2" ry="2" />
+<text  x="60.92" y="239.5" ></text>
+</g>
+<g >
+<title>sipround (3 samples, 0.05%)</title><rect x="20.3" y="245" width="0.6" height="15.0" fill="rgb(224,159,45)" rx="2" ry="2" />
+<text  x="23.28" y="255.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_write (1 samples, 0.02%)</title><rect x="1188.8" y="245" width="0.2" height="15.0" fill="rgb(210,140,43)" rx="2" ry="2" />
+<text  x="1191.77" y="255.5" ></text>
+</g>
+<g >
+<title>__stpcpy_sse2_unaligned (4 samples, 0.07%)</title><rect x="60.6" y="213" width="0.8" height="15.0" fill="rgb(254,54,18)" rx="2" ry="2" />
+<text  x="63.60" y="223.5" ></text>
+</g>
+<g >
+<title>manager_reload (5,720 samples, 99.70%)</title><rect x="12.9" y="373" width="1176.5" height="15.0" fill="rgb(217,46,46)" rx="2" ry="2" />
+<text  x="15.88" y="383.5" >manager_reload</text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="32.4" y="245" width="0.2" height="15.0" fill="rgb(212,85,24)" rx="2" ry="2" />
+<text  x="35.42" y="255.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="1184.7" y="245" width="0.2" height="15.0" fill="rgb(210,218,13)" rx="2" ry="2" />
+<text  x="1187.65" y="255.5" ></text>
+</g>
+<g >
+<title>hashmap_get (2 samples, 0.03%)</title><rect x="66.6" y="277" width="0.4" height="15.0" fill="rgb(248,179,52)" rx="2" ry="2" />
+<text  x="69.56" y="287.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (3 samples, 0.05%)</title><rect x="43.5" y="245" width="0.6" height="15.0" fill="rgb(243,48,53)" rx="2" ry="2" />
+<text  x="46.53" y="255.5" ></text>
+</g>
+<g >
+<title>set_get (13 samples, 0.23%)</title><rect x="55.3" y="245" width="2.6" height="15.0" fill="rgb(217,186,21)" rx="2" ry="2" />
+<text  x="58.25" y="255.5" ></text>
+</g>
+<g >
+<title>trivial_hash_func (2 samples, 0.03%)</title><rect x="46.8" y="181" width="0.4" height="15.0" fill="rgb(228,66,49)" rx="2" ry="2" />
+<text  x="49.82" y="191.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (7 samples, 0.12%)</title><rect x="58.3" y="229" width="1.5" height="15.0" fill="rgb(212,52,50)" rx="2" ry="2" />
+<text  x="61.34" y="239.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_contains (1 samples, 0.02%)</title><rect x="52.4" y="293" width="0.2" height="15.0" fill="rgb(252,104,6)" rx="2" ry="2" />
+<text  x="55.37" y="303.5" ></text>
+</g>
+<g >
+<title>mfree (3 samples, 0.05%)</title><rect x="30.6" y="261" width="0.6" height="15.0" fill="rgb(247,99,52)" rx="2" ry="2" />
+<text  x="33.57" y="271.5" ></text>
+</g>
+<g >
+<title>fsnotify_clear_marks_by_group (1 samples, 0.02%)</title><rect x="31.2" y="101" width="0.2" height="15.0" fill="rgb(227,15,42)" rx="2" ry="2" />
+<text  x="34.19" y="111.5" ></text>
+</g>
+<g >
+<title>mempool_alloc0_tile (1 samples, 0.02%)</title><rect x="1186.7" y="245" width="0.2" height="15.0" fill="rgb(252,28,6)" rx="2" ry="2" />
+<text  x="1189.71" y="255.5" ></text>
+</g>
+<g >
+<title>unit_load_fragment (8 samples, 0.14%)</title><rect x="62.9" y="293" width="1.6" height="15.0" fill="rgb(222,89,49)" rx="2" ry="2" />
+<text  x="65.86" y="303.5" ></text>
+</g>
+<g >
+<title>resize_buckets (5 samples, 0.09%)</title><rect x="68.2" y="229" width="1.0" height="15.0" fill="rgb(250,42,19)" rx="2" ry="2" />
+<text  x="71.21" y="239.5" ></text>
+</g>
+<g >
+<title>_int_malloc (2 samples, 0.03%)</title><rect x="25.8" y="197" width="0.4" height="15.0" fill="rgb(211,85,49)" rx="2" ry="2" />
+<text  x="28.84" y="207.5" ></text>
+</g>
+<g >
+<title>set_remove (2 samples, 0.03%)</title><rect x="31.6" y="309" width="0.4" height="15.0" fill="rgb(222,12,1)" rx="2" ry="2" />
+<text  x="34.60" y="319.5" ></text>
+</g>
+<g >
+<title>sys_sendmsg (11 samples, 0.19%)</title><rect x="26.7" y="181" width="2.2" height="15.0" fill="rgb(209,213,15)" rx="2" ry="2" />
+<text  x="29.66" y="191.5" ></text>
+</g>
+<g >
+<title>unit_add_name (6 samples, 0.10%)</title><rect x="1185.1" y="277" width="1.2" height="15.0" fill="rgb(217,120,25)" rx="2" ry="2" />
+<text  x="1188.06" y="287.5" ></text>
+</g>
+<g >
+<title>page_fault (1 samples, 0.02%)</title><rect x="1186.7" y="197" width="0.2" height="15.0" fill="rgb(233,41,8)" rx="2" ry="2" />
+<text  x="1189.71" y="207.5" ></text>
+</g>
+<g >
+<title>unit_get_members_mask (5,384 samples, 93.85%)</title><rect x="69.6" y="293" width="1107.4" height="15.0" fill="rgb(230,157,4)" rx="2" ry="2" />
+<text  x="72.65" y="303.5" >unit_get_members_mask</text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.02%)</title><rect x="10.4" y="405" width="0.2" height="15.0" fill="rgb(207,169,33)" rx="2" ry="2" />
+<text  x="13.41" y="415.5" ></text>
+</g>
+<g >
+<title>_IO_vfscanf_internal (1 samples, 0.02%)</title><rect x="37.2" y="277" width="0.2" height="15.0" fill="rgb(247,78,45)" rx="2" ry="2" />
+<text  x="40.15" y="287.5" ></text>
+</g>
+<g >
+<title>streq_ptr (1 samples, 0.02%)</title><rect x="1186.1" y="197" width="0.2" height="15.0" fill="rgb(231,151,29)" rx="2" ry="2" />
+<text  x="1189.09" y="207.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (11 samples, 0.19%)</title><rect x="26.7" y="197" width="2.2" height="15.0" fill="rgb(241,137,41)" rx="2" ry="2" />
+<text  x="29.66" y="207.5" ></text>
+</g>
+<g >
+<title>__strcmp_sse2_unaligned (2 samples, 0.03%)</title><rect x="63.9" y="213" width="0.4" height="15.0" fill="rgb(224,48,42)" rx="2" ry="2" />
+<text  x="66.89" y="223.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="60.2" y="197" width="0.2" height="15.0" fill="rgb(230,25,38)" rx="2" ry="2" />
+<text  x="63.19" y="207.5" ></text>
+</g>
+<g >
+<title>malloc_consolidate (1 samples, 0.02%)</title><rect x="1186.9" y="261" width="0.2" height="15.0" fill="rgb(207,225,25)" rx="2" ry="2" />
+<text  x="1189.91" y="271.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (1 samples, 0.02%)</title><rect x="51.3" y="181" width="0.2" height="15.0" fill="rgb(205,179,20)" rx="2" ry="2" />
+<text  x="54.34" y="191.5" ></text>
+</g>
+<g >
+<title>unit_get_own_mask (2,347 samples, 40.91%)</title><rect x="694.3" y="261" width="482.7" height="15.0" fill="rgb(212,111,32)" rx="2" ry="2" />
+<text  x="697.31" y="271.5" >unit_get_own_mask</text>
+</g>
+<g >
+<title>manager_load_unit (3 samples, 0.05%)</title><rect x="1181.8" y="261" width="0.6" height="15.0" fill="rgb(250,147,0)" rx="2" ry="2" />
+<text  x="1184.77" y="271.5" ></text>
+</g>
+<g >
+<title>__m128i_shift_right (1 samples, 0.02%)</title><rect x="54.0" y="229" width="0.2" height="15.0" fill="rgb(224,188,50)" rx="2" ry="2" />
+<text  x="57.02" y="239.5" ></text>
+</g>
+<g >
+<title>lstat64 (1 samples, 0.02%)</title><rect x="1177.5" y="149" width="0.2" height="15.0" fill="rgb(227,140,23)" rx="2" ry="2" />
+<text  x="1180.45" y="159.5" ></text>
+</g>
+<g >
+<title>SYSC_newlstat (1 samples, 0.02%)</title><rect x="1177.5" y="69" width="0.2" height="15.0" fill="rgb(229,154,2)" rx="2" ry="2" />
+<text  x="1180.45" y="79.5" ></text>
+</g>
+<g >
+<title>is_symlink (1 samples, 0.02%)</title><rect x="1177.5" y="165" width="0.2" height="15.0" fill="rgb(215,33,53)" rx="2" ry="2" />
+<text  x="1180.45" y="175.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="65.7" y="229" width="0.2" height="15.0" fill="rgb(214,55,13)" rx="2" ry="2" />
+<text  x="68.74" y="239.5" ></text>
+</g>
+<g >
+<title>unit_name_to_type (1 samples, 0.02%)</title><rect x="33.4" y="309" width="0.3" height="15.0" fill="rgb(226,207,26)" rx="2" ry="2" />
+<text  x="36.45" y="319.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (5 samples, 0.09%)</title><rect x="64.9" y="293" width="1.0" height="15.0" fill="rgb(235,119,47)" rx="2" ry="2" />
+<text  x="67.92" y="303.5" ></text>
+</g>
+<g >
+<title>mount_setup_unit (29 samples, 0.51%)</title><rect x="1180.9" y="309" width="6.0" height="15.0" fill="rgb(230,145,16)" rx="2" ry="2" />
+<text  x="1183.95" y="319.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="43.5" y="197" width="0.2" height="15.0" fill="rgb(236,176,31)" rx="2" ry="2" />
+<text  x="46.53" y="207.5" ></text>
+</g>
+<g >
+<title>mount_is_network (1 samples, 0.02%)</title><rect x="1181.6" y="277" width="0.2" height="15.0" fill="rgb(234,153,47)" rx="2" ry="2" />
+<text  x="1184.57" y="287.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (4 samples, 0.07%)</title><rect x="63.5" y="245" width="0.8" height="15.0" fill="rgb(239,213,39)" rx="2" ry="2" />
+<text  x="66.48" y="255.5" ></text>
+</g>
+<g >
+<title>_int_realloc (2 samples, 0.03%)</title><rect x="25.8" y="213" width="0.4" height="15.0" fill="rgb(229,227,8)" rx="2" ry="2" />
+<text  x="28.84" y="223.5" ></text>
+</g>
+<g >
+<title>string_table_lookup (1 samples, 0.02%)</title><rect x="1186.1" y="213" width="0.2" height="15.0" fill="rgb(249,127,18)" rx="2" ry="2" />
+<text  x="1189.09" y="223.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="1183.6" y="181" width="0.2" height="15.0" fill="rgb(224,43,54)" rx="2" ry="2" />
+<text  x="1186.62" y="191.5" ></text>
+</g>
+<g >
+<title>ptep_set_access_flags (1 samples, 0.02%)</title><rect x="24.6" y="117" width="0.2" height="15.0" fill="rgb(252,74,51)" rx="2" ry="2" />
+<text  x="27.60" y="127.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_new (1 samples, 0.02%)</title><rect x="11.4" y="277" width="0.2" height="15.0" fill="rgb(231,89,14)" rx="2" ry="2" />
+<text  x="14.44" y="287.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (1 samples, 0.02%)</title><rect x="47.2" y="197" width="0.2" height="15.0" fill="rgb(222,86,23)" rx="2" ry="2" />
+<text  x="50.23" y="207.5" ></text>
+</g>
+<g >
+<title>__sscanf (5 samples, 0.09%)</title><rect x="1179.9" y="261" width="1.0" height="15.0" fill="rgb(231,75,23)" rx="2" ry="2" />
+<text  x="1182.92" y="271.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (2 samples, 0.03%)</title><rect x="50.1" y="229" width="0.4" height="15.0" fill="rgb(213,227,30)" rx="2" ry="2" />
+<text  x="53.11" y="239.5" ></text>
+</g>
+<g >
+<title>__libc_fork (2 samples, 0.03%)</title><rect x="10.0" y="437" width="0.4" height="15.0" fill="rgb(244,163,20)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" ></text>
+</g>
+<g >
+<title>memset (2 samples, 0.03%)</title><rect x="24.6" y="245" width="0.4" height="15.0" fill="rgb(217,107,16)" rx="2" ry="2" />
+<text  x="27.60" y="255.5" ></text>
+</g>
+<g >
+<title>___sys_sendmsg (11 samples, 0.19%)</title><rect x="26.7" y="149" width="2.2" height="15.0" fill="rgb(211,203,27)" rx="2" ry="2" />
+<text  x="29.66" y="159.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (1 samples, 0.02%)</title><rect x="42.1" y="149" width="0.2" height="15.0" fill="rgb(247,116,2)" rx="2" ry="2" />
+<text  x="45.09" y="159.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate (1 samples, 0.02%)</title><rect x="1187.1" y="341" width="0.2" height="15.0" fill="rgb(207,71,54)" rx="2" ry="2" />
+<text  x="1190.12" y="351.5" ></text>
+</g>
+<g >
+<title>strjoin_real (1 samples, 0.02%)</title><rect x="64.3" y="261" width="0.2" height="15.0" fill="rgb(229,93,50)" rx="2" ry="2" />
+<text  x="67.30" y="271.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1 samples, 0.02%)</title><rect x="1186.7" y="213" width="0.2" height="15.0" fill="rgb(239,10,18)" rx="2" ry="2" />
+<text  x="1189.71" y="223.5" ></text>
+</g>
+<g >
+<title>siphash24_compress (1 samples, 0.02%)</title><rect x="60.2" y="181" width="0.2" height="15.0" fill="rgb(237,68,40)" rx="2" ry="2" />
+<text  x="63.19" y="191.5" ></text>
+</g>
+<g >
+<title>unit_file_find_dirs.lto_priv.99 (26 samples, 0.45%)</title><rect x="54.8" y="261" width="5.4" height="15.0" fill="rgb(222,44,11)" rx="2" ry="2" />
+<text  x="57.84" y="271.5" ></text>
+</g>
+<g >
+<title>___fprintf_chk (3 samples, 0.05%)</title><rect x="1187.5" y="325" width="0.6" height="15.0" fill="rgb(205,185,30)" rx="2" ry="2" />
+<text  x="1190.53" y="335.5" ></text>
+</g>
+<g >
+<title>unit_file_find_dropin_paths (1 samples, 0.02%)</title><rect x="1177.2" y="165" width="0.3" height="15.0" fill="rgb(244,197,0)" rx="2" ry="2" />
+<text  x="1180.25" y="175.5" ></text>
+</g>
+<g >
+<title>bus_unit_send_removed_signal (20 samples, 0.35%)</title><rect x="25.2" y="325" width="4.1" height="15.0" fill="rgb(249,16,9)" rx="2" ry="2" />
+<text  x="28.22" y="335.5" ></text>
+</g>
+<g >
+<title>_IO_vfscanf_internal (5 samples, 0.09%)</title><rect x="1179.9" y="229" width="1.0" height="15.0" fill="rgb(215,162,20)" rx="2" ry="2" />
+<text  x="1182.92" y="239.5" ></text>
+</g>
+<g >
+<title>unit_set_invocation_id (1 samples, 0.02%)</title><rect x="40.0" y="325" width="0.2" height="15.0" fill="rgb(232,38,36)" rx="2" ry="2" />
+<text  x="43.03" y="335.5" ></text>
+</g>
+<g >
+<title>__GI___libc_realloc (1 samples, 0.02%)</title><rect x="1180.7" y="213" width="0.2" height="15.0" fill="rgb(238,53,28)" rx="2" ry="2" />
+<text  x="1183.74" y="223.5" ></text>
+</g>
+<g >
+<title>__vfs_read (9 samples, 0.16%)</title><rect x="1178.1" y="149" width="1.8" height="15.0" fill="rgb(219,141,38)" rx="2" ry="2" />
+<text  x="1181.07" y="159.5" ></text>
+</g>
+<g >
+<title>unit_name_path_escape (3 samples, 0.05%)</title><rect x="1184.4" y="277" width="0.7" height="15.0" fill="rgb(231,222,2)" rx="2" ry="2" />
+<text  x="1187.45" y="287.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (8 samples, 0.14%)</title><rect x="67.6" y="293" width="1.6" height="15.0" fill="rgb(214,90,11)" rx="2" ry="2" />
+<text  x="70.59" y="303.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="32.4" y="213" width="0.2" height="15.0" fill="rgb(247,73,50)" rx="2" ry="2" />
+<text  x="35.42" y="223.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (4 samples, 0.07%)</title><rect x="1183.2" y="213" width="0.8" height="15.0" fill="rgb(214,226,40)" rx="2" ry="2" />
+<text  x="1186.21" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (1 samples, 0.02%)</title><rect x="1185.5" y="229" width="0.2" height="15.0" fill="rgb(215,4,10)" rx="2" ry="2" />
+<text  x="1188.47" y="239.5" ></text>
+</g>
+<g >
+<title>sd_bus_message_unrefp (1 samples, 0.02%)</title><rect x="26.5" y="277" width="0.2" height="15.0" fill="rgb(222,8,52)" rx="2" ry="2" />
+<text  x="29.45" y="287.5" ></text>
+</g>
+<g >
+<title>_IO_vfprintf_internal (3 samples, 0.05%)</title><rect x="1187.5" y="309" width="0.6" height="15.0" fill="rgb(209,222,40)" rx="2" ry="2" />
+<text  x="1190.53" y="319.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="67.6" y="229" width="0.2" height="15.0" fill="rgb(218,176,43)" rx="2" ry="2" />
+<text  x="70.59" y="239.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (1 samples, 0.02%)</title><rect x="41.1" y="213" width="0.2" height="15.0" fill="rgb(208,108,9)" rx="2" ry="2" />
+<text  x="44.06" y="223.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.02%)</title><rect x="1177.5" y="101" width="0.2" height="15.0" fill="rgb(253,139,48)" rx="2" ry="2" />
+<text  x="1180.45" y="111.5" ></text>
+</g>
+<g >
+<title>sys_write (1 samples, 0.02%)</title><rect x="1188.8" y="181" width="0.2" height="15.0" fill="rgb(211,15,44)" rx="2" ry="2" />
+<text  x="1191.77" y="191.5" ></text>
+</g>
+<g >
+<title>unit_add_to_dbus_queue (1 samples, 0.02%)</title><rect x="69.2" y="325" width="0.2" height="15.0" fill="rgb(222,172,16)" rx="2" ry="2" />
+<text  x="72.24" y="335.5" ></text>
+</g>
+<g >
+<title>hashmap_put (6 samples, 0.10%)</title><rect x="68.0" y="261" width="1.2" height="15.0" fill="rgb(205,212,53)" rx="2" ry="2" />
+<text  x="71.00" y="271.5" ></text>
+</g>
+<g >
+<title>unit_realize_cgroup_now.lto_priv.567 (2 samples, 0.03%)</title><rect x="10.6" y="341" width="0.4" height="15.0" fill="rgb(225,212,51)" rx="2" ry="2" />
+<text  x="13.62" y="351.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (2 samples, 0.03%)</title><rect x="30.2" y="261" width="0.4" height="15.0" fill="rgb(244,187,53)" rx="2" ry="2" />
+<text  x="33.16" y="271.5" ></text>
+</g>
+<g >
+<title>generic_perform_write (1 samples, 0.02%)</title><rect x="1188.8" y="85" width="0.2" height="15.0" fill="rgb(219,208,4)" rx="2" ry="2" />
+<text  x="1191.77" y="95.5" ></text>
+</g>
+<g >
+<title>unit_free.part.77 (93 samples, 1.62%)</title><rect x="12.9" y="341" width="19.1" height="15.0" fill="rgb(214,136,37)" rx="2" ry="2" />
+<text  x="15.88" y="351.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="68.0" y="245" width="0.2" height="15.0" fill="rgb(244,191,47)" rx="2" ry="2" />
+<text  x="71.00" y="255.5" ></text>
+</g>
+<g >
+<title>unit_add_two_dependencies_by_name.constprop.40 (8 samples, 0.14%)</title><rect x="43.1" y="277" width="1.7" height="15.0" fill="rgb(252,145,45)" rx="2" ry="2" />
+<text  x="46.11" y="287.5" ></text>
+</g>
+<g >
+<title>unit_get_own_mask (1 samples, 0.02%)</title><rect x="1177.0" y="293" width="0.2" height="15.0" fill="rgb(237,163,37)" rx="2" ry="2" />
+<text  x="1180.04" y="303.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (2 samples, 0.03%)</title><rect x="66.6" y="261" width="0.4" height="15.0" fill="rgb(240,87,42)" rx="2" ry="2" />
+<text  x="69.56" y="271.5" ></text>
+</g>
+<g >
+<title>manager_load_unit (2 samples, 0.03%)</title><rect x="43.1" y="261" width="0.4" height="15.0" fill="rgb(218,107,6)" rx="2" ry="2" />
+<text  x="46.11" y="271.5" ></text>
+</g>
+<g >
+<title>(sd-executor) (2 samples, 0.03%)</title><rect x="10.0" y="453" width="0.4" height="15.0" fill="rgb(226,67,7)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" ></text>
+</g>
+<g >
+<title>bucket_at (1 samples, 0.02%)</title><rect x="42.7" y="181" width="0.2" height="15.0" fill="rgb(210,129,14)" rx="2" ry="2" />
+<text  x="45.70" y="191.5" ></text>
+</g>
+<g >
+<title>siphash24_compress (3 samples, 0.05%)</title><rect x="55.5" y="197" width="0.6" height="15.0" fill="rgb(209,107,25)" rx="2" ry="2" />
+<text  x="58.46" y="207.5" ></text>
+</g>
+<g >
+<title>cgroup_context_has_cpu_weight (135 samples, 2.35%)</title><rect x="1044.0" y="229" width="27.7" height="15.0" fill="rgb(226,66,39)" rx="2" ry="2" />
+<text  x="1046.97" y="239.5" >c..</text>
+</g>
+<g >
+<title>unit_add_two_dependencies (3 samples, 0.05%)</title><rect x="44.1" y="261" width="0.7" height="15.0" fill="rgb(253,199,30)" rx="2" ry="2" />
+<text  x="47.14" y="271.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_underflow (9 samples, 0.16%)</title><rect x="1178.1" y="245" width="1.8" height="15.0" fill="rgb(249,148,36)" rx="2" ry="2" />
+<text  x="1181.07" y="255.5" ></text>
+</g>
+<g >
+<title>mnt_table_parse_stream (16 samples, 0.28%)</title><rect x="1177.7" y="277" width="3.2" height="15.0" fill="rgb(225,145,21)" rx="2" ry="2" />
+<text  x="1180.66" y="287.5" ></text>
+</g>
+<g >
+<title>seq_vprintf (5 samples, 0.09%)</title><rect x="1178.5" y="69" width="1.0" height="15.0" fill="rgb(223,190,32)" rx="2" ry="2" />
+<text  x="1181.48" y="79.5" ></text>
+</g>
+<g >
+<title>split (1 samples, 0.02%)</title><rect x="1181.6" y="213" width="0.2" height="15.0" fill="rgb(214,59,46)" rx="2" ry="2" />
+<text  x="1184.57" y="223.5" ></text>
+</g>
+<g >
+<title>_itoa_word (1 samples, 0.02%)</title><rect x="1187.9" y="293" width="0.2" height="15.0" fill="rgb(231,3,2)" rx="2" ry="2" />
+<text  x="1190.94" y="303.5" ></text>
+</g>
+<g >
+<title>_raw_spin_lock (1 samples, 0.02%)</title><rect x="26.7" y="101" width="0.2" height="15.0" fill="rgb(251,218,11)" rx="2" ry="2" />
+<text  x="29.66" y="111.5" ></text>
+</g>
+<g >
+<title>path_compare (2 samples, 0.03%)</title><rect x="53.4" y="261" width="0.4" height="15.0" fill="rgb(228,100,12)" rx="2" ry="2" />
+<text  x="56.40" y="271.5" ></text>
+</g>
+<g >
+<title>unit_load_dropin (1 samples, 0.02%)</title><rect x="1177.2" y="197" width="0.3" height="15.0" fill="rgb(247,100,6)" rx="2" ry="2" />
+<text  x="1180.25" y="207.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (3 samples, 0.05%)</title><rect x="44.1" y="245" width="0.7" height="15.0" fill="rgb(227,224,1)" rx="2" ry="2" />
+<text  x="47.14" y="255.5" ></text>
+</g>
+<g >
+<title>unit_require_mounts_for (7 samples, 0.12%)</title><rect x="48.3" y="277" width="1.4" height="15.0" fill="rgb(248,108,21)" rx="2" ry="2" />
+<text  x="51.26" y="287.5" ></text>
+</g>
+<g >
+<title>parse_boolean (2 samples, 0.03%)</title><rect x="37.4" y="325" width="0.4" height="15.0" fill="rgb(234,8,27)" rx="2" ry="2" />
+<text  x="40.36" y="335.5" ></text>
+</g>
+<g >
+<title>malloc_multiply (1 samples, 0.02%)</title><rect x="64.3" y="245" width="0.2" height="15.0" fill="rgb(225,140,46)" rx="2" ry="2" />
+<text  x="67.30" y="255.5" ></text>
+</g>
+<g >
+<title>rotate_left (1 samples, 0.02%)</title><rect x="1184.2" y="133" width="0.2" height="15.0" fill="rgb(248,11,30)" rx="2" ry="2" />
+<text  x="1187.24" y="143.5" ></text>
+</g>
+<g >
+<title>__strspn_sse42 (1 samples, 0.02%)</title><rect x="40.9" y="245" width="0.2" height="15.0" fill="rgb(216,6,4)" rx="2" ry="2" />
+<text  x="43.85" y="255.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (5,731 samples, 99.90%)</title><rect x="10.6" y="421" width="1178.8" height="15.0" fill="rgb(219,195,25)" rx="2" ry="2" />
+<text  x="13.62" y="431.5" >__libc_start_main</text>
+</g>
+<g >
+<title>__fput (1 samples, 0.02%)</title><rect x="31.2" y="149" width="0.2" height="15.0" fill="rgb(250,197,50)" rx="2" ry="2" />
+<text  x="34.19" y="159.5" ></text>
+</g>
+<g >
+<title>unit_load_dropin (1 samples, 0.02%)</title><rect x="1177.5" y="197" width="0.2" height="15.0" fill="rgb(229,92,31)" rx="2" ry="2" />
+<text  x="1180.45" y="207.5" ></text>
+</g>
+<g >
+<title>alloc_skb_with_frags (1 samples, 0.02%)</title><rect x="26.9" y="85" width="0.2" height="15.0" fill="rgb(234,48,11)" rx="2" ry="2" />
+<text  x="29.87" y="95.5" ></text>
+</g>
+<g >
+<title>hashmap_put (1 samples, 0.02%)</title><rect x="48.7" y="261" width="0.2" height="15.0" fill="rgb(246,208,27)" rx="2" ry="2" />
+<text  x="51.67" y="271.5" ></text>
+</g>
+<g >
+<title>read_line (7 samples, 0.12%)</title><rect x="37.8" y="325" width="1.4" height="15.0" fill="rgb(206,93,18)" rx="2" ry="2" />
+<text  x="40.77" y="335.5" ></text>
+</g>
+<g >
+<title>__zpl_show_options.isra.2 (1 samples, 0.02%)</title><rect x="1179.7" y="69" width="0.2" height="15.0" fill="rgb(232,215,45)" rx="2" ry="2" />
+<text  x="1182.72" y="79.5" ></text>
+</g>
+<g >
+<title>__libc_calloc (1 samples, 0.02%)</title><rect x="1186.9" y="293" width="0.2" height="15.0" fill="rgb(234,19,51)" rx="2" ry="2" />
+<text  x="1189.91" y="303.5" ></text>
+</g>
+<g >
+<title>get_hash_key (1 samples, 0.02%)</title><rect x="47.4" y="197" width="0.2" height="15.0" fill="rgb(239,96,6)" rx="2" ry="2" />
+<text  x="50.43" y="207.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (10 samples, 0.17%)</title><rect x="1182.4" y="245" width="2.0" height="15.0" fill="rgb(239,111,37)" rx="2" ry="2" />
+<text  x="1185.39" y="255.5" ></text>
+</g>
+<g >
+<title>entry_value (37 samples, 0.64%)</title><rect x="118.0" y="245" width="7.6" height="15.0" fill="rgb(250,52,19)" rx="2" ry="2" />
+<text  x="120.98" y="255.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (9 samples, 0.16%)</title><rect x="41.3" y="245" width="1.8" height="15.0" fill="rgb(220,188,54)" rx="2" ry="2" />
+<text  x="44.26" y="255.5" ></text>
+</g>
+<g >
+<title>sd_bus_send (11 samples, 0.19%)</title><rect x="26.7" y="277" width="2.2" height="15.0" fill="rgb(226,211,0)" rx="2" ry="2" />
+<text  x="29.66" y="287.5" ></text>
+</g>
+<g >
+<title>mount_done.lto_priv.265 (3 samples, 0.05%)</title><rect x="30.6" y="309" width="0.6" height="15.0" fill="rgb(205,95,21)" rx="2" ry="2" />
+<text  x="33.57" y="319.5" ></text>
+</g>
+<g >
+<title>unit_coldplug (2 samples, 0.03%)</title><rect x="32.2" y="341" width="0.4" height="15.0" fill="rgb(236,150,33)" rx="2" ry="2" />
+<text  x="35.21" y="351.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (1 samples, 0.02%)</title><rect x="1177.2" y="133" width="0.3" height="15.0" fill="rgb(234,58,21)" rx="2" ry="2" />
+<text  x="1180.25" y="143.5" ></text>
+</g>
+<g >
+<title>sock_sendmsg (5 samples, 0.09%)</title><rect x="11.6" y="149" width="1.1" height="15.0" fill="rgb(214,93,38)" rx="2" ry="2" />
+<text  x="14.65" y="159.5" ></text>
+</g>
+<g >
+<title>manager_recheck_journal (1 samples, 0.02%)</title><rect x="32.4" y="293" width="0.2" height="15.0" fill="rgb(220,12,47)" rx="2" ry="2" />
+<text  x="35.42" y="303.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (2 samples, 0.03%)</title><rect x="41.3" y="197" width="0.4" height="15.0" fill="rgb(218,175,51)" rx="2" ry="2" />
+<text  x="44.26" y="207.5" ></text>
+</g>
+<g >
+<title>unit_name_escape (1 samples, 0.02%)</title><rect x="1184.9" y="261" width="0.2" height="15.0" fill="rgb(217,48,40)" rx="2" ry="2" />
+<text  x="1187.86" y="271.5" ></text>
+</g>
+<g >
+<title>fstab_test_option (2 samples, 0.03%)</title><rect x="44.8" y="261" width="0.4" height="15.0" fill="rgb(245,169,44)" rx="2" ry="2" />
+<text  x="47.76" y="271.5" ></text>
+</g>
+<g >
+<title>next_idx (3 samples, 0.05%)</title><rect x="24.0" y="261" width="0.6" height="15.0" fill="rgb(228,217,43)" rx="2" ry="2" />
+<text  x="26.99" y="271.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1 samples, 0.02%)</title><rect x="1185.1" y="245" width="0.2" height="15.0" fill="rgb(214,2,5)" rx="2" ry="2" />
+<text  x="1188.06" y="255.5" ></text>
+</g>
+<g >
+<title>_IO_vsscanf (2 samples, 0.03%)</title><rect x="36.9" y="293" width="0.5" height="15.0" fill="rgb(215,71,23)" rx="2" ry="2" />
+<text  x="39.94" y="303.5" ></text>
+</g>
+<g >
+<title>bucket_set_dib (1 samples, 0.02%)</title><rect x="48.1" y="181" width="0.2" height="15.0" fill="rgb(207,64,20)" rx="2" ry="2" />
+<text  x="51.05" y="191.5" ></text>
+</g>
+<g >
+<title>set_put (2 samples, 0.03%)</title><rect x="49.3" y="261" width="0.4" height="15.0" fill="rgb(233,7,8)" rx="2" ry="2" />
+<text  x="52.29" y="271.5" ></text>
+</g>
+<g >
+<title>bus_socket_write_message (5 samples, 0.09%)</title><rect x="11.6" y="261" width="1.1" height="15.0" fill="rgb(237,99,28)" rx="2" ry="2" />
+<text  x="14.65" y="271.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (4 samples, 0.07%)</title><rect x="65.1" y="261" width="0.8" height="15.0" fill="rgb(218,200,13)" rx="2" ry="2" />
+<text  x="68.12" y="271.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (1 samples, 0.02%)</title><rect x="43.3" y="213" width="0.2" height="15.0" fill="rgb(214,113,29)" rx="2" ry="2" />
+<text  x="46.32" y="223.5" ></text>
+</g>
+<g >
+<title>bus_write_message (11 samples, 0.19%)</title><rect x="26.7" y="261" width="2.2" height="15.0" fill="rgb(232,114,15)" rx="2" ry="2" />
+<text  x="29.66" y="271.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="1181.8" y="213" width="0.2" height="15.0" fill="rgb(238,8,4)" rx="2" ry="2" />
+<text  x="1184.77" y="223.5" ></text>
+</g>
+<g >
+<title>strcmp_ptr (1 samples, 0.02%)</title><rect x="1186.1" y="181" width="0.2" height="15.0" fill="rgb(210,41,18)" rx="2" ry="2" />
+<text  x="1189.09" y="191.5" ></text>
+</g>
+<g >
+<title>memcpy (1 samples, 0.02%)</title><rect x="65.3" y="213" width="0.2" height="15.0" fill="rgb(218,217,14)" rx="2" ry="2" />
+<text  x="68.33" y="223.5" ></text>
+</g>
+<g >
+<title>unit_get_subtree_mask (4,627 samples, 80.65%)</title><rect x="225.3" y="277" width="951.7" height="15.0" fill="rgb(235,52,38)" rx="2" ry="2" />
+<text  x="228.35" y="287.5" >unit_get_subtree_mask</text>
+</g>
+<g >
+<title>fflush_and_check (1 samples, 0.02%)</title><rect x="10.6" y="181" width="0.2" height="15.0" fill="rgb(252,5,30)" rx="2" ry="2" />
+<text  x="13.62" y="191.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate (7 samples, 0.12%)</title><rect x="13.9" y="309" width="1.4" height="15.0" fill="rgb(208,78,1)" rx="2" ry="2" />
+<text  x="16.91" y="319.5" ></text>
+</g>
+<g >
+<title>unit_get_members_mask (2 samples, 0.03%)</title><rect x="32.6" y="261" width="0.4" height="15.0" fill="rgb(218,122,27)" rx="2" ry="2" />
+<text  x="35.63" y="271.5" ></text>
+</g>
+<g >
+<title>fstab_test_option (1 samples, 0.02%)</title><rect x="41.1" y="245" width="0.2" height="15.0" fill="rgb(210,139,7)" rx="2" ry="2" />
+<text  x="44.06" y="255.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (1 samples, 0.02%)</title><rect x="31.2" y="229" width="0.2" height="15.0" fill="rgb(249,100,54)" rx="2" ry="2" />
+<text  x="34.19" y="239.5" ></text>
+</g>
+<g >
+<title>process_deps (1 samples, 0.02%)</title><rect x="1177.5" y="181" width="0.2" height="15.0" fill="rgb(252,188,51)" rx="2" ry="2" />
+<text  x="1180.45" y="191.5" ></text>
+</g>
+<g >
+<title>cgroup_context_has_unified_memory_config (35 samples, 0.61%)</title><rect x="1085.1" y="229" width="7.2" height="15.0" fill="rgb(215,144,24)" rx="2" ry="2" />
+<text  x="1088.10" y="239.5" ></text>
+</g>
+<g >
+<title>mount_coldplug.lto_priv.267 (1 samples, 0.02%)</title><rect x="32.4" y="325" width="0.2" height="15.0" fill="rgb(213,139,48)" rx="2" ry="2" />
+<text  x="35.42" y="335.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="33.2" y="261" width="0.2" height="15.0" fill="rgb(232,63,2)" rx="2" ry="2" />
+<text  x="36.24" y="271.5" ></text>
+</g>
+<g >
+<title>mount_add_mount_dependencies (21 samples, 0.37%)</title><rect x="45.4" y="293" width="4.3" height="15.0" fill="rgb(251,103,45)" rx="2" ry="2" />
+<text  x="48.38" y="303.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_free (1 samples, 0.02%)</title><rect x="13.7" y="293" width="0.2" height="15.0" fill="rgb(245,216,3)" rx="2" ry="2" />
+<text  x="16.70" y="303.5" ></text>
+</g>
+<g >
+<title>unit_get_cgroup_context (377 samples, 6.57%)</title><rect x="1092.3" y="245" width="77.5" height="15.0" fill="rgb(235,215,17)" rx="2" ry="2" />
+<text  x="1095.30" y="255.5" >unit_get..</text>
+</g>
+<g >
+<title>base_bucket_scan (3 samples, 0.05%)</title><rect x="63.7" y="229" width="0.6" height="15.0" fill="rgb(246,53,27)" rx="2" ry="2" />
+<text  x="66.68" y="239.5" ></text>
+</g>
+<g >
+<title>unit_file_find_dropin_paths (26 samples, 0.45%)</title><rect x="54.8" y="277" width="5.4" height="15.0" fill="rgb(218,73,26)" rx="2" ry="2" />
+<text  x="57.84" y="287.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_iterate (1 samples, 0.02%)</title><rect x="1187.1" y="325" width="0.2" height="15.0" fill="rgb(221,128,2)" rx="2" ry="2" />
+<text  x="1190.12" y="335.5" ></text>
+</g>
+<g >
+<title>memset (1 samples, 0.02%)</title><rect x="63.3" y="197" width="0.2" height="15.0" fill="rgb(246,108,48)" rx="2" ry="2" />
+<text  x="66.27" y="207.5" ></text>
+</g>
+<g >
+<title>copy_page_range (1 samples, 0.02%)</title><rect x="10.4" y="341" width="0.2" height="15.0" fill="rgb(248,158,18)" rx="2" ry="2" />
+<text  x="13.41" y="351.5" ></text>
+</g>
+<g >
+<title>bucket_move_entry (1 samples, 0.02%)</title><rect x="1185.5" y="213" width="0.2" height="15.0" fill="rgb(251,6,35)" rx="2" ry="2" />
+<text  x="1188.47" y="223.5" ></text>
+</g>
+<g >
+<title>unit_load_dropin (39 samples, 0.68%)</title><rect x="54.8" y="309" width="8.1" height="15.0" fill="rgb(218,199,30)" rx="2" ry="2" />
+<text  x="57.84" y="319.5" ></text>
+</g>
+<g >
+<title>page_fault (1 samples, 0.02%)</title><rect x="24.6" y="213" width="0.2" height="15.0" fill="rgb(228,81,40)" rx="2" ry="2" />
+<text  x="27.60" y="223.5" ></text>
+</g>
+<g >
+<title>freep (1 samples, 0.02%)</title><rect x="11.0" y="293" width="0.2" height="15.0" fill="rgb(208,193,5)" rx="2" ry="2" />
+<text  x="14.03" y="303.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (1 samples, 0.02%)</title><rect x="1185.5" y="181" width="0.2" height="15.0" fill="rgb(224,52,37)" rx="2" ry="2" />
+<text  x="1188.47" y="191.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="43.3" y="197" width="0.2" height="15.0" fill="rgb(252,100,33)" rx="2" ry="2" />
+<text  x="46.32" y="207.5" ></text>
+</g>
+<g >
+<title>__wake_up_common_lock (7 samples, 0.12%)</title><rect x="27.5" y="69" width="1.4" height="15.0" fill="rgb(213,138,4)" rx="2" ry="2" />
+<text  x="30.48" y="79.5" ></text>
+</g>
+<g >
+<title>delete_trailing_chars (1 samples, 0.02%)</title><rect x="1184.7" y="261" width="0.2" height="15.0" fill="rgb(222,193,26)" rx="2" ry="2" />
+<text  x="1187.65" y="271.5" ></text>
+</g>
+<g >
+<title>manager_deserialize (37 samples, 0.64%)</title><rect x="32.6" y="357" width="7.6" height="15.0" fill="rgb(224,170,46)" rx="2" ry="2" />
+<text  x="35.63" y="367.5" ></text>
+</g>
+<g >
+<title>bucket_mark_free (2 samples, 0.03%)</title><rect x="24.6" y="261" width="0.4" height="15.0" fill="rgb(241,117,31)" rx="2" ry="2" />
+<text  x="27.60" y="271.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (3 samples, 0.05%)</title><rect x="43.5" y="213" width="0.6" height="15.0" fill="rgb(236,84,44)" rx="2" ry="2" />
+<text  x="46.53" y="223.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (3 samples, 0.05%)</title><rect x="50.5" y="213" width="0.6" height="15.0" fill="rgb(241,212,11)" rx="2" ry="2" />
+<text  x="53.52" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (2 samples, 0.03%)</title><rect x="1184.0" y="213" width="0.4" height="15.0" fill="rgb(232,111,41)" rx="2" ry="2" />
+<text  x="1187.04" y="223.5" ></text>
+</g>
+<g >
+<title>target_load.lto_priv.255 (1 samples, 0.02%)</title><rect x="1177.5" y="213" width="0.2" height="15.0" fill="rgb(253,150,13)" rx="2" ry="2" />
+<text  x="1180.45" y="223.5" ></text>
+</g>
+<g >
+<title>iov_iter_copy_from_user_atomic (1 samples, 0.02%)</title><rect x="1188.8" y="69" width="0.2" height="15.0" fill="rgb(248,225,13)" rx="2" ry="2" />
+<text  x="1191.77" y="79.5" ></text>
+</g>
+<g >
+<title>interface_name_is_valid (1 samples, 0.02%)</title><rect x="25.6" y="261" width="0.2" height="15.0" fill="rgb(214,187,49)" rx="2" ry="2" />
+<text  x="28.63" y="271.5" ></text>
+</g>
+<g >
+<title>string_table_lookup (1 samples, 0.02%)</title><rect x="52.2" y="213" width="0.2" height="15.0" fill="rgb(206,181,24)" rx="2" ry="2" />
+<text  x="55.16" y="223.5" ></text>
+</g>
+<g >
+<title>unit_get_delegate_mask (35 samples, 0.61%)</title><rect x="1169.8" y="245" width="7.2" height="15.0" fill="rgb(243,138,9)" rx="2" ry="2" />
+<text  x="1172.84" y="255.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate_in_internal_order (425 samples, 7.41%)</title><rect x="135.7" y="229" width="87.4" height="15.0" fill="rgb(239,220,46)" rx="2" ry="2" />
+<text  x="138.67" y="239.5" >hashmap_it..</text>
+</g>
+<g >
+<title>hashmap_iterate_entry (1 samples, 0.02%)</title><rect x="1187.1" y="309" width="0.2" height="15.0" fill="rgb(215,13,1)" rx="2" ry="2" />
+<text  x="1190.12" y="319.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1 samples, 0.02%)</title><rect x="63.3" y="181" width="0.2" height="15.0" fill="rgb(239,26,15)" rx="2" ry="2" />
+<text  x="66.27" y="191.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_iterate@plt (11 samples, 0.19%)</title><rect x="223.1" y="261" width="2.2" height="15.0" fill="rgb(207,93,31)" rx="2" ry="2" />
+<text  x="226.09" y="271.5" ></text>
+</g>
+<g >
+<title>stpcpy (1 samples, 0.02%)</title><rect x="57.9" y="245" width="0.2" height="15.0" fill="rgb(228,63,30)" rx="2" ry="2" />
+<text  x="60.92" y="255.5" ></text>
+</g>
+<g >
+<title>mount_point_is_api (3 samples, 0.05%)</title><rect x="53.8" y="293" width="0.6" height="15.0" fill="rgb(245,102,19)" rx="2" ry="2" />
+<text  x="56.81" y="303.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="43.1" y="213" width="0.2" height="15.0" fill="rgb(220,161,44)" rx="2" ry="2" />
+<text  x="46.11" y="223.5" ></text>
+</g>
+<g >
+<title>unit_add_two_dependencies (8 samples, 0.14%)</title><rect x="67.6" y="309" width="1.6" height="15.0" fill="rgb(232,13,19)" rx="2" ry="2" />
+<text  x="70.59" y="319.5" ></text>
+</g>
+<g >
+<title>write_string_file_ts (1 samples, 0.02%)</title><rect x="10.6" y="213" width="0.2" height="15.0" fill="rgb(233,93,36)" rx="2" ry="2" />
+<text  x="13.62" y="223.5" ></text>
+</g>
+<g >
+<title>__do_page_fault (1 samples, 0.02%)</title><rect x="24.6" y="181" width="0.2" height="15.0" fill="rgb(219,26,41)" rx="2" ry="2" />
+<text  x="27.60" y="191.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_xsputn (1 samples, 0.02%)</title><rect x="1188.8" y="293" width="0.2" height="15.0" fill="rgb(213,129,52)" rx="2" ry="2" />
+<text  x="1191.77" y="303.5" ></text>
+</g>
+<g >
+<title>hashmap_put_robin_hood (3 samples, 0.05%)</title><rect x="41.7" y="197" width="0.6" height="15.0" fill="rgb(218,205,14)" rx="2" ry="2" />
+<text  x="44.68" y="207.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate (690 samples, 12.03%)</title><rect x="83.4" y="277" width="141.9" height="15.0" fill="rgb(205,38,15)" rx="2" ry="2" />
+<text  x="86.43" y="287.5" >hashmap_iterate</text>
+</g>
+<g >
+<title>format_decode (4 samples, 0.07%)</title><rect x="1178.7" y="37" width="0.8" height="15.0" fill="rgb(228,25,1)" rx="2" ry="2" />
+<text  x="1181.69" y="47.5" ></text>
+</g>
+<g >
+<title>unit_name_from_path (2 samples, 0.03%)</title><rect x="54.4" y="293" width="0.4" height="15.0" fill="rgb(239,220,51)" rx="2" ry="2" />
+<text  x="57.43" y="303.5" ></text>
+</g>
+<g >
+<title>cgroup_context_has_io_config (65 samples, 1.13%)</title><rect x="1071.7" y="229" width="13.4" height="15.0" fill="rgb(219,189,18)" rx="2" ry="2" />
+<text  x="1074.73" y="239.5" ></text>
+</g>
+<g >
+<title>__sscanf (2 samples, 0.03%)</title><rect x="36.9" y="309" width="0.5" height="15.0" fill="rgb(245,70,12)" rx="2" ry="2" />
+<text  x="39.94" y="319.5" ></text>
+</g>
+<g >
+<title>cg_migrate_recursive_fallback (2 samples, 0.03%)</title><rect x="10.6" y="293" width="0.4" height="15.0" fill="rgb(206,137,40)" rx="2" ry="2" />
+<text  x="13.62" y="303.5" ></text>
+</g>
+<g >
+<title>copy_page_range (1 samples, 0.02%)</title><rect x="10.0" y="341" width="0.2" height="15.0" fill="rgb(233,175,46)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" ></text>
+</g>
+<g >
+<title>string_table_lookup (1 samples, 0.02%)</title><rect x="1182.0" y="197" width="0.2" height="15.0" fill="rgb(231,47,30)" rx="2" ry="2" />
+<text  x="1184.98" y="207.5" ></text>
+</g>
+<g >
+<title>hashmap_iterate_entry (474 samples, 8.26%)</title><rect x="125.6" y="245" width="97.5" height="15.0" fill="rgb(225,211,28)" rx="2" ry="2" />
+<text  x="128.59" y="255.5" >hashmap_ite..</text>
+</g>
+<g >
+<title>unit_get_subtree_mask (2 samples, 0.03%)</title><rect x="32.6" y="277" width="0.4" height="15.0" fill="rgb(235,156,11)" rx="2" ry="2" />
+<text  x="35.63" y="287.5" ></text>
+</g>
+<g >
+<title>__strcspn_sse42 (1 samples, 0.02%)</title><rect x="54.0" y="245" width="0.2" height="15.0" fill="rgb(229,7,39)" rx="2" ry="2" />
+<text  x="57.02" y="255.5" ></text>
+</g>
+<g >
+<title>path_equal (2 samples, 0.03%)</title><rect x="54.0" y="277" width="0.4" height="15.0" fill="rgb(250,199,51)" rx="2" ry="2" />
+<text  x="57.02" y="287.5" ></text>
+</g>
+<g >
+<title>skip_free_buckets (3 samples, 0.05%)</title><rect x="14.7" y="245" width="0.6" height="15.0" fill="rgb(251,90,23)" rx="2" ry="2" />
+<text  x="17.73" y="255.5" ></text>
+</g>
+<g >
+<title>_mm_shuffle_epi8 (1 samples, 0.02%)</title><rect x="54.0" y="213" width="0.2" height="15.0" fill="rgb(238,180,45)" rx="2" ry="2" />
+<text  x="57.02" y="223.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (2 samples, 0.03%)</title><rect x="10.0" y="421" width="0.4" height="15.0" fill="rgb(218,42,7)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" ></text>
+</g>
+<g >
+<title>manager_load_unit_prepare (2 samples, 0.03%)</title><rect x="52.0" y="261" width="0.4" height="15.0" fill="rgb(208,181,33)" rx="2" ry="2" />
+<text  x="54.96" y="271.5" ></text>
+</g>
+<g >
+<title>_start (5,731 samples, 99.90%)</title><rect x="10.6" y="437" width="1178.8" height="15.0" fill="rgb(229,165,10)" rx="2" ry="2" />
+<text  x="13.62" y="447.5" >_start</text>
+</g>
+<g >
+<title>internal_hashmap_get (2 samples, 0.03%)</title><rect x="67.6" y="245" width="0.4" height="15.0" fill="rgb(206,171,5)" rx="2" ry="2" />
+<text  x="70.59" y="255.5" ></text>
+</g>
+<g >
+<title>unit_get_members_mask (454 samples, 7.91%)</title><rect x="600.9" y="261" width="93.4" height="15.0" fill="rgb(241,112,13)" rx="2" ry="2" />
+<text  x="603.93" y="271.5" >unit_get_me..</text>
+</g>
+<g >
+<title>__GI___libc_read (9 samples, 0.16%)</title><rect x="1178.1" y="229" width="1.8" height="15.0" fill="rgb(210,184,15)" rx="2" ry="2" />
+<text  x="1181.07" y="239.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="63.5" y="229" width="0.2" height="15.0" fill="rgb(219,100,33)" rx="2" ry="2" />
+<text  x="66.48" y="239.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="52.4" y="277" width="0.2" height="15.0" fill="rgb(207,104,38)" rx="2" ry="2" />
+<text  x="55.37" y="287.5" ></text>
+</g>
+<g >
+<title>memdup (1 samples, 0.02%)</title><rect x="51.8" y="261" width="0.2" height="15.0" fill="rgb(206,183,52)" rx="2" ry="2" />
+<text  x="54.75" y="271.5" ></text>
+</g>
+<g >
+<title>unit_load (5,528 samples, 96.36%)</title><rect x="40.2" y="341" width="1137.0" height="15.0" fill="rgb(240,176,44)" rx="2" ry="2" />
+<text  x="43.24" y="351.5" >unit_load</text>
+</g>
+<g >
+<title>mnt_table_parse_file (16 samples, 0.28%)</title><rect x="1177.7" y="293" width="3.2" height="15.0" fill="rgb(231,90,17)" rx="2" ry="2" />
+<text  x="1180.66" y="303.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (1 samples, 0.02%)</title><rect x="1185.7" y="261" width="0.2" height="15.0" fill="rgb(229,215,4)" rx="2" ry="2" />
+<text  x="1188.68" y="271.5" ></text>
+</g>
+<g >
+<title>_mm_loadu_si128 (1 samples, 0.02%)</title><rect x="1181.4" y="213" width="0.2" height="15.0" fill="rgb(234,6,31)" rx="2" ry="2" />
+<text  x="1184.36" y="223.5" ></text>
+</g>
+<g >
+<title>sipround (1 samples, 0.02%)</title><rect x="65.7" y="197" width="0.2" height="15.0" fill="rgb(217,191,41)" rx="2" ry="2" />
+<text  x="68.74" y="207.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (1 samples, 0.02%)</title><rect x="64.7" y="293" width="0.2" height="15.0" fill="rgb(217,197,38)" rx="2" ry="2" />
+<text  x="67.71" y="303.5" ></text>
+</g>
+<g >
+<title>acquire_random_bytes (1 samples, 0.02%)</title><rect x="47.4" y="165" width="0.2" height="15.0" fill="rgb(210,84,12)" rx="2" ry="2" />
+<text  x="50.43" y="175.5" ></text>
+</g>
+<g >
+<title>__GI___libc_realloc (1 samples, 0.02%)</title><rect x="25.4" y="197" width="0.2" height="15.0" fill="rgb(249,110,23)" rx="2" ry="2" />
+<text  x="28.43" y="207.5" ></text>
+</g>
+<g >
+<title>manager_loop (11 samples, 0.19%)</title><rect x="10.6" y="373" width="2.3" height="15.0" fill="rgb(253,57,26)" rx="2" ry="2" />
+<text  x="13.62" y="383.5" ></text>
+</g>
+<g >
+<title>set_get (4 samples, 0.07%)</title><rect x="63.5" y="261" width="0.8" height="15.0" fill="rgb(214,40,30)" rx="2" ry="2" />
+<text  x="66.48" y="271.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="48.7" y="245" width="0.2" height="15.0" fill="rgb(238,96,26)" rx="2" ry="2" />
+<text  x="51.67" y="255.5" ></text>
+</g>
+<g >
+<title>do_page_fault (1 samples, 0.02%)</title><rect x="1186.7" y="181" width="0.2" height="15.0" fill="rgb(254,181,13)" rx="2" ry="2" />
+<text  x="1189.71" y="191.5" ></text>
+</g>
+<g >
+<title>base_bucket_hash (1 samples, 0.02%)</title><rect x="1184.2" y="181" width="0.2" height="15.0" fill="rgb(243,63,7)" rx="2" ry="2" />
+<text  x="1187.24" y="191.5" ></text>
+</g>
+<g >
+<title>path_free_specs (1 samples, 0.02%)</title><rect x="31.2" y="309" width="0.2" height="15.0" fill="rgb(231,25,51)" rx="2" ry="2" />
+<text  x="34.19" y="319.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (2 samples, 0.03%)</title><rect x="39.4" y="309" width="0.4" height="15.0" fill="rgb(217,60,15)" rx="2" ry="2" />
+<text  x="42.41" y="319.5" ></text>
+</g>
+<g >
+<title>sys_newlstat (1 samples, 0.02%)</title><rect x="1177.5" y="85" width="0.2" height="15.0" fill="rgb(234,98,15)" rx="2" ry="2" />
+<text  x="1180.45" y="95.5" ></text>
+</g>
+<g >
+<title>__strchr_avx2 (1 samples, 0.02%)</title><rect x="52.0" y="229" width="0.2" height="15.0" fill="rgb(210,213,40)" rx="2" ry="2" />
+<text  x="54.96" y="239.5" ></text>
+</g>
+<g >
+<title>cg_migrate_recursive (2 samples, 0.03%)</title><rect x="10.6" y="277" width="0.4" height="15.0" fill="rgb(217,67,3)" rx="2" ry="2" />
+<text  x="13.62" y="287.5" ></text>
+</g>
+<g >
+<title>__libc_calloc (2 samples, 0.03%)</title><rect x="1186.3" y="261" width="0.4" height="15.0" fill="rgb(230,195,30)" rx="2" ry="2" />
+<text  x="1189.30" y="271.5" ></text>
+</g>
+<g >
+<title>do_wp_page (2 samples, 0.03%)</title><rect x="1189.6" y="325" width="0.4" height="15.0" fill="rgb(219,229,0)" rx="2" ry="2" />
+<text  x="1192.59" y="335.5" ></text>
+</g>
+<g >
+<title>__strstr_sse2_unaligned (1 samples, 0.02%)</title><rect x="48.9" y="245" width="0.2" height="15.0" fill="rgb(206,111,20)" rx="2" ry="2" />
+<text  x="51.87" y="255.5" ></text>
+</g>
+<g >
+<title>load_from_path (8 samples, 0.14%)</title><rect x="62.9" y="277" width="1.6" height="15.0" fill="rgb(231,85,14)" rx="2" ry="2" />
+<text  x="65.86" y="287.5" ></text>
+</g>
+<g >
+<title>_do_fork (1 samples, 0.02%)</title><rect x="10.4" y="373" width="0.2" height="15.0" fill="rgb(239,31,9)" rx="2" ry="2" />
+<text  x="13.41" y="383.5" ></text>
+</g>
+<g >
+<title>siphash24_compress (1 samples, 0.02%)</title><rect x="47.0" y="165" width="0.2" height="15.0" fill="rgb(208,76,10)" rx="2" ry="2" />
+<text  x="50.02" y="175.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (9 samples, 0.16%)</title><rect x="41.3" y="261" width="1.8" height="15.0" fill="rgb(235,121,33)" rx="2" ry="2" />
+<text  x="44.26" y="271.5" ></text>
+</g>
+<g >
+<title>memcpy (1 samples, 0.02%)</title><rect x="25.0" y="245" width="0.2" height="15.0" fill="rgb(244,17,41)" rx="2" ry="2" />
+<text  x="28.01" y="255.5" ></text>
+</g>
+<g >
+<title>__strspn_sse42 (1 samples, 0.02%)</title><rect x="1181.4" y="245" width="0.2" height="15.0" fill="rgb(229,44,20)" rx="2" ry="2" />
+<text  x="1184.36" y="255.5" ></text>
+</g>
+<g >
+<title>do_page_fault (1 samples, 0.02%)</title><rect x="24.6" y="197" width="0.2" height="15.0" fill="rgb(222,208,51)" rx="2" ry="2" />
+<text  x="27.60" y="207.5" ></text>
+</g>
+<g >
+<title>storage_ptr (23 samples, 0.40%)</title><rect x="113.3" y="229" width="4.7" height="15.0" fill="rgb(231,142,30)" rx="2" ry="2" />
+<text  x="116.25" y="239.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_by_name.constprop.25 (2 samples, 0.03%)</title><rect x="1177.2" y="277" width="0.5" height="15.0" fill="rgb(243,88,43)" rx="2" ry="2" />
+<text  x="1180.25" y="287.5" ></text>
+</g>
+<g >
+<title>unit_add_mount_dependencies (8 samples, 0.14%)</title><rect x="64.5" y="325" width="1.7" height="15.0" fill="rgb(243,225,16)" rx="2" ry="2" />
+<text  x="67.51" y="335.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency_hashmap (7 samples, 0.12%)</title><rect x="66.2" y="293" width="1.4" height="15.0" fill="rgb(222,87,27)" rx="2" ry="2" />
+<text  x="69.15" y="303.5" ></text>
+</g>
+<g >
+<title>base_bucket_scan (2 samples, 0.03%)</title><rect x="43.7" y="197" width="0.4" height="15.0" fill="rgb(250,18,10)" rx="2" ry="2" />
+<text  x="46.73" y="207.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (3 samples, 0.05%)</title><rect x="51.1" y="213" width="0.7" height="15.0" fill="rgb(246,85,26)" rx="2" ry="2" />
+<text  x="54.14" y="223.5" ></text>
+</g>
+<g >
+<title>hashmap_base_put_boldly (1 samples, 0.02%)</title><rect x="49.5" y="245" width="0.2" height="15.0" fill="rgb(209,125,37)" rx="2" ry="2" />
+<text  x="52.49" y="255.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_get (2 samples, 0.03%)</title><rect x="60.2" y="213" width="0.4" height="15.0" fill="rgb(205,18,52)" rx="2" ry="2" />
+<text  x="63.19" y="223.5" ></text>
+</g>
+<g >
+<title>unit_name_is_valid (1 samples, 0.02%)</title><rect x="1182.0" y="229" width="0.2" height="15.0" fill="rgb(210,115,42)" rx="2" ry="2" />
+<text  x="1184.98" y="239.5" ></text>
+</g>
+<g >
+<title>_IO_acquire_lock_fct (1 samples, 0.02%)</title><rect x="1189.0" y="293" width="0.2" height="15.0" fill="rgb(226,150,17)" rx="2" ry="2" />
+<text  x="1191.97" y="303.5" ></text>
+</g>
+<g >
+<title>strv_free (2 samples, 0.03%)</title><rect x="30.2" y="293" width="0.4" height="15.0" fill="rgb(241,175,13)" rx="2" ry="2" />
+<text  x="33.16" y="303.5" ></text>
+</g>
+<g >
+<title>manager_clear_jobs_and_units.lto_priv.410 (93 samples, 1.62%)</title><rect x="12.9" y="357" width="19.1" height="15.0" fill="rgb(213,194,19)" rx="2" ry="2" />
+<text  x="15.88" y="367.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (2 samples, 0.03%)</title><rect x="10.0" y="405" width="0.4" height="15.0" fill="rgb(240,58,6)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" ></text>
+</g>
+<g >
+<title>hashmap_base_ensure_allocated (2 samples, 0.03%)</title><rect x="66.2" y="277" width="0.4" height="15.0" fill="rgb(247,199,34)" rx="2" ry="2" />
+<text  x="69.15" y="287.5" ></text>
+</g>
+<g >
+<title>_int_free (1 samples, 0.02%)</title><rect x="26.5" y="229" width="0.2" height="15.0" fill="rgb(211,18,37)" rx="2" ry="2" />
+<text  x="29.45" y="239.5" ></text>
+</g>
+<g >
+<title>write_string_file (1 samples, 0.02%)</title><rect x="10.6" y="229" width="0.2" height="15.0" fill="rgb(231,118,46)" rx="2" ry="2" />
+<text  x="13.62" y="239.5" ></text>
+</g>
+<g >
+<title>string_hash_func (1 samples, 0.02%)</title><rect x="48.5" y="213" width="0.2" height="15.0" fill="rgb(236,154,0)" rx="2" ry="2" />
+<text  x="51.46" y="223.5" ></text>
+</g>
+<g >
+<title>fstab_test_option (1 samples, 0.02%)</title><rect x="1181.6" y="245" width="0.2" height="15.0" fill="rgb(217,130,8)" rx="2" ry="2" />
+<text  x="1184.57" y="255.5" ></text>
+</g>
+<g >
+<title>urandom_read (1 samples, 0.02%)</title><rect x="47.4" y="85" width="0.2" height="15.0" fill="rgb(242,116,22)" rx="2" ry="2" />
+<text  x="50.43" y="95.5" ></text>
+</g>
+<g >
+<title>unit_name_to_type (1 samples, 0.02%)</title><rect x="49.9" y="229" width="0.2" height="15.0" fill="rgb(210,198,53)" rx="2" ry="2" />
+<text  x="52.90" y="239.5" ></text>
+</g>
+<g >
+<title>fputc (1 samples, 0.02%)</title><rect x="1189.0" y="309" width="0.2" height="15.0" fill="rgb(240,153,39)" rx="2" ry="2" />
+<text  x="1191.97" y="319.5" ></text>
+</g>
+<g >
+<title>sd_id128_from_string (1 samples, 0.02%)</title><rect x="39.2" y="325" width="0.2" height="15.0" fill="rgb(222,8,27)" rx="2" ry="2" />
+<text  x="42.21" y="335.5" ></text>
+</g>
+<g >
+<title>message_extend_fields (2 samples, 0.03%)</title><rect x="25.8" y="245" width="0.4" height="15.0" fill="rgb(222,129,7)" rx="2" ry="2" />
+<text  x="28.84" y="255.5" ></text>
+</g>
+<g >
+<title>reset_direct_storage (1 samples, 0.02%)</title><rect x="63.3" y="229" width="0.2" height="15.0" fill="rgb(216,132,41)" rx="2" ry="2" />
+<text  x="66.27" y="239.5" ></text>
+</g>
+<g >
+<title>__do_page_fault (3 samples, 0.05%)</title><rect x="1189.4" y="389" width="0.6" height="15.0" fill="rgb(207,140,54)" rx="2" ry="2" />
+<text  x="1192.38" y="399.5" ></text>
+</g>
+<g >
+<title>dual_timestamp_deserialize (2 samples, 0.03%)</title><rect x="36.9" y="325" width="0.5" height="15.0" fill="rgb(215,29,9)" rx="2" ry="2" />
+<text  x="39.94" y="335.5" ></text>
+</g>
+<g >
+<title>unit_add_dependency (3 samples, 0.05%)</title><rect x="43.5" y="261" width="0.6" height="15.0" fill="rgb(227,161,27)" rx="2" ry="2" />
+<text  x="46.53" y="271.5" ></text>
+</g>
+<g >
+<title>entry_SYSCALL_64 (1 samples, 0.02%)</title><rect x="1177.5" y="117" width="0.2" height="15.0" fill="rgb(254,213,9)" rx="2" ry="2" />
+<text  x="1180.45" y="127.5" ></text>
+</g>
+<g >
+<title>memcpy (1 samples, 0.02%)</title><rect x="1185.5" y="197" width="0.2" height="15.0" fill="rgb(211,147,52)" rx="2" ry="2" />
+<text  x="1188.47" y="207.5" ></text>
+</g>
+<g >
+<title>_IO_new_file_sync (1 samples, 0.02%)</title><rect x="10.6" y="149" width="0.2" height="15.0" fill="rgb(241,6,51)" rx="2" ry="2" />
+<text  x="13.62" y="159.5" ></text>
+</g>
+<g >
+<title>mount_point_is_api (2 samples, 0.03%)</title><rect x="1181.2" y="293" width="0.4" height="15.0" fill="rgb(237,103,53)" rx="2" ry="2" />
+<text  x="1184.16" y="303.5" ></text>
+</g>
+<g >
+<title>process_deps (1 samples, 0.02%)</title><rect x="1177.2" y="181" width="0.3" height="15.0" fill="rgb(247,107,52)" rx="2" ry="2" />
+<text  x="1180.25" y="191.5" ></text>
+</g>
+<g >
+<title>sys_sendmsg (5 samples, 0.09%)</title><rect x="11.6" y="197" width="1.1" height="15.0" fill="rgb(222,62,20)" rx="2" ry="2" />
+<text  x="14.65" y="207.5" ></text>
+</g>
+<g >
+<title>unit_set_default_slice (2 samples, 0.03%)</title><rect x="52.0" y="293" width="0.4" height="15.0" fill="rgb(252,104,37)" rx="2" ry="2" />
+<text  x="54.96" y="303.5" ></text>
+</g>
+<g >
+<title>hashmap_put (3 samples, 0.05%)</title><rect x="44.1" y="213" width="0.7" height="15.0" fill="rgb(248,0,50)" rx="2" ry="2" />
+<text  x="47.14" y="223.5" ></text>
+</g>
+<g >
+<title>unit_patch_contexts (1 samples, 0.02%)</title><rect x="51.8" y="293" width="0.2" height="15.0" fill="rgb(219,20,14)" rx="2" ry="2" />
+<text  x="54.75" y="303.5" ></text>
+</g>
+<g >
+<title>resize_buckets (1 samples, 0.02%)</title><rect x="10.8" y="213" width="0.2" height="15.0" fill="rgb(242,136,27)" rx="2" ry="2" />
+<text  x="13.82" y="223.5" ></text>
+</g>
+<g >
+<title>unit_type_from_string (1 samples, 0.02%)</title><rect x="1186.1" y="229" width="0.2" height="15.0" fill="rgb(231,8,25)" rx="2" ry="2" />
+<text  x="1189.09" y="239.5" ></text>
+</g>
+<g >
+<title>zpl_show_options (1 samples, 0.02%)</title><rect x="1179.7" y="85" width="0.2" height="15.0" fill="rgb(216,194,49)" rx="2" ry="2" />
+<text  x="1182.72" y="95.5" ></text>
+</g>
+<g >
+<title>service_load.lto_priv.135 (1 samples, 0.02%)</title><rect x="1177.2" y="213" width="0.3" height="15.0" fill="rgb(218,45,43)" rx="2" ry="2" />
+<text  x="1180.25" y="223.5" ></text>
+</g>
+<g >
+<title>rcu_all_qs (1 samples, 0.02%)</title><rect x="12.5" y="37" width="0.2" height="15.0" fill="rgb(225,16,21)" rx="2" ry="2" />
+<text  x="15.47" y="47.5" ></text>
+</g>
+<g >
+<title>malloc_consolidate (1 samples, 0.02%)</title><rect x="13.5" y="293" width="0.2" height="15.0" fill="rgb(234,61,32)" rx="2" ry="2" />
+<text  x="16.50" y="303.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_clear (1 samples, 0.02%)</title><rect x="13.7" y="277" width="0.2" height="15.0" fill="rgb(215,40,29)" rx="2" ry="2" />
+<text  x="16.70" y="287.5" ></text>
+</g>
+<g >
+<title>mount_is_network (1 samples, 0.02%)</title><rect x="41.1" y="277" width="0.2" height="15.0" fill="rgb(223,39,9)" rx="2" ry="2" />
+<text  x="44.06" y="287.5" ></text>
+</g>
+<g >
+<title>extract_crng (1 samples, 0.02%)</title><rect x="47.4" y="69" width="0.2" height="15.0" fill="rgb(247,229,12)" rx="2" ry="2" />
+<text  x="50.43" y="79.5" ></text>
+</g>
+<g >
+<title>do_syscall_64 (1 samples, 0.02%)</title><rect x="31.2" y="213" width="0.2" height="15.0" fill="rgb(219,28,45)" rx="2" ry="2" />
+<text  x="34.19" y="223.5" ></text>
+</g>
+<g >
+<title>write_string_stream_ts (1 samples, 0.02%)</title><rect x="10.6" y="197" width="0.2" height="15.0" fill="rgb(231,149,21)" rx="2" ry="2" />
+<text  x="13.62" y="207.5" ></text>
+</g>
+<g >
+<title>skb_queue_tail (2 samples, 0.03%)</title><rect x="12.1" y="117" width="0.4" height="15.0" fill="rgb(245,198,38)" rx="2" ry="2" />
+<text  x="15.06" y="127.5" ></text>
+</g>
+<g >
+<title>__GI___libc_free (1 samples, 0.02%)</title><rect x="1185.3" y="245" width="0.2" height="15.0" fill="rgb(252,182,37)" rx="2" ry="2" />
+<text  x="1188.27" y="255.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_erms (1 samples, 0.02%)</title><rect x="1186.5" y="245" width="0.2" height="15.0" fill="rgb(206,173,0)" rx="2" ry="2" />
+<text  x="1189.50" y="255.5" ></text>
+</g>
+<g >
+<title>internal_hashmap_remove (43 samples, 0.75%)</title><rect x="16.4" y="293" width="8.8" height="15.0" fill="rgb(254,185,2)" rx="2" ry="2" />
+<text  x="19.38" y="303.5" ></text>
+</g>
+</g>
+</svg>
